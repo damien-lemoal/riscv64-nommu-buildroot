@@ -41,7 +41,7 @@ GNU_TARGET_NAME = $(ARCH)-$(TARGET_VENDOR)-$(TARGET_OS)-$(LIBC)$(ABI)
 
 # FLAT binary format needs uclinux
 ifeq ($(BR2_BINFMT_FLAT),y)
-TARGET_OS = uclinux
+TARGET_OS = linux
 else
 TARGET_OS = linux
 endif
