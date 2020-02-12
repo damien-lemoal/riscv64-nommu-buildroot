@@ -1,7 +1,7 @@
 From d1a3ca7ca56630fddde7311a0474eed4a21335a7 Mon Sep 17 00:00:00 2001
 From: Max Filippov <jcmvbkbc@gmail.com>
 Date: Mon, 3 Feb 2020 13:57:32 -0800
-Subject: [PATCH] include/ctype.h: drop is*_l macro definitions
+Subject: [PATCH 14/21] include/ctype.h: drop is*_l macro definitions
 
 ctype locale-specific macro definitions are broken because they result
 in dereference of pointer to structure of incomplete type.
@@ -17,7 +17,7 @@ Signed-off-by: Max Filippov <jcmvbkbc@gmail.com>
  1 file changed, 33 deletions(-)
 
 diff --git a/include/ctype.h b/include/ctype.h
-index ecd5e730886a..e934cf3321a6 100644
+index ecd5e7308..e934cf332 100644
 --- a/include/ctype.h
 +++ b/include/ctype.h
 @@ -350,46 +350,13 @@ libc_hidden_proto(tolower_l)
@@ -68,5 +68,5 @@ index ecd5e730886a..e934cf3321a6 100644
  	&& defined __UCLIBC_SUSV4_LEGACY__
  #   define isascii_l(c,l)	__isascii_l ((c), (l))
 -- 
-2.20.1
+2.24.1
 

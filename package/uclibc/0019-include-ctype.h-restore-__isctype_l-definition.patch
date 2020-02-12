@@ -1,16 +1,13 @@
-From 7a9a3e4b36955e8530756823d3443f6822562c56 Mon Sep 17 00:00:00 2001
+From 90f24fc94897d93deb80d933d18a4f31dc6bf05a Mon Sep 17 00:00:00 2001
 From: Max Filippov <jcmvbkbc@gmail.com>
-Date: Sun, 9 Feb 2020 22:29:53 +0100
-Subject: [PATCH] include/ctype.h: restore __isctype_l definition
+Date: Sun, 9 Feb 2020 12:13:02 -0800
+Subject: [PATCH 19/21] include/ctype.h: restore __isctype_l definition
 
 Recent is*_l fix broke uclibc build because removed __isctype_l
 definition was used in libc/misc/ctype/ctype.c. Restore it.
 
 Fixes: d1a3ca7ca566 ("include/ctype.h: drop is*_l macro definitions")
 Signed-off-by: Max Filippov <jcmvbkbc@gmail.com>
----
-Upstream status:
-https://mailman.uclibc-ng.org/pipermail/devel/2020-February/001940.html
 ---
  include/ctype.h | 1 +
  1 file changed, 1 insertion(+)
@@ -28,5 +25,5 @@ index e934cf332..05f21c553 100644
  #  if (defined __USE_SVID || defined __USE_MISC || defined __USE_XOPEN) \
  	&& defined __UCLIBC_SUSV4_LEGACY__
 -- 
-2.20.1
+2.24.1
 
