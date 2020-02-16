@@ -66,3 +66,8 @@ For Kendryte K210 boards
 The built (or precompiled) initramfs cpio image file can be used as the default
 k210.cpio initramfs builtin the kernel (as referenced by nommu_k210_defconfig).
 
+For conveniance, the K210 kernel support patches can be found in
+riscv64-uclibc-nommu/kernel-patches directory. A precompiled bootable kernel
+image including these patches and the simple initramfs.cpio userspace can be
+found in the kernel-image directory.
+
