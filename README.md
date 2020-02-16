@@ -1,4 +1,4 @@
-Buildrrot for RISC-V 64 NOMMU
+Buildroot for RISC-V 64 NOMMU
 =============================
 
 Buildroot is a simple, efficient and easy-to-use tool to generate embedded
@@ -51,7 +51,7 @@ $ git clone git://git.busybox.net/busybox.git
 $ cd busybox
 $ make buildroot/riscv64-uclibc-nommu/busybox-small.config
 $ make SKIP_STRIP=y
-$ make install
+$ make SKIP_STRIP=y install
 ```
 
 The base files usable for an initramfs image can be found in the directory
