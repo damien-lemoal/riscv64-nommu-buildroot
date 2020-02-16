@@ -1,0 +1,103 @@
+From 8c8c4fc13feadddf9a12cbc234b9681092b9ab5f Mon Sep 17 00:00:00 2001
+From: Damien Le Moal <damien.lemoal@wdc.com>
+Date: Fri, 17 Jan 2020 13:30:48 +0900
+Subject: [PATCH 04/10] riscv: Add BUILTIN_DTB support
+
+Enable a kernel builtin dtb for boards not capable of providing a
+device tree to the kernel.
+
+Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
+---
+ arch/riscv/Kbuild            |  1 +
+ arch/riscv/Kconfig           | 18 ++++++++++++++++++
+ arch/riscv/boot/dts/Makefile |  4 ++++
+ arch/riscv/kernel/setup.c    |  6 ++++++
+ arch/riscv/mm/init.c         |  4 ++++
+ 5 files changed, 33 insertions(+)
+
+diff --git a/arch/riscv/Kbuild b/arch/riscv/Kbuild
+index d1d0aa70fdf1..988804e430e4 100644
+--- a/arch/riscv/Kbuild
++++ b/arch/riscv/Kbuild
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ 
+ obj-y += kernel/ mm/ net/
++obj-$(CONFIG_USE_BUILTIN_DTB)	+= boot/dts/
+diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
+index 1a3b5a5276be..28899e15f548 100644
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -355,6 +355,24 @@ config CMDLINE_FORCE
+ 
+ endchoice
+ 
++config USE_BUILTIN_DTB
++	bool "Use builtin DTB"
++	help
++	  Link a device tree blob for particular hardware into the kernel,
++	  suppressing use of the DTB pointer provided by the bootloader.
++	  This option should only be used with hardware or bootloaders that
++	  are not capable of providing a DTB to the kernel, or for
++	  experimental hardware without stable device tree bindings.
++
++config BUILTIN_DTB_SOURCE
++	string "Source file for builtin DTB"
++	default ""
++	depends on USE_BUILTIN_DTB
++	help
++	  Base name (without suffix, relative to arch/riscv/boot/dts) for
++	  the a DTS file that will be used to produce the DTB linked into
++	  the kernel.
++
+ endmenu
+ 
+ menu "Power management options"
+diff --git a/arch/riscv/boot/dts/Makefile b/arch/riscv/boot/dts/Makefile
+index dcc3ada78455..0bf2669aa12d 100644
+--- a/arch/riscv/boot/dts/Makefile
++++ b/arch/riscv/boot/dts/Makefile
+@@ -1,2 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
++ifneq ($(CONFIG_BUILTIN_DTB_SOURCE),"")
++obj-$(CONFIG_USE_BUILTIN_DTB) += $(patsubst "%",%,$(CONFIG_BUILTIN_DTB_SOURCE)).dtb.o
++else
+ subdir-y += sifive
++endif
+diff --git a/arch/riscv/kernel/setup.c b/arch/riscv/kernel/setup.c
+index 0a6d415b0a5a..3e89be9d888c 100644
+--- a/arch/riscv/kernel/setup.c
++++ b/arch/riscv/kernel/setup.c
+@@ -68,7 +68,13 @@ void __init setup_arch(char **cmdline_p)
+ 
+ 	setup_bootmem();
+ 	paging_init();
++
++#if IS_ENABLED(CONFIG_USE_BUILTIN_DTB)
++	unflatten_and_copy_device_tree();
++#else
+ 	unflatten_device_tree();
++#endif
++
+ 	clint_init_boot_cpu();
+ 
+ #ifdef CONFIG_SWIOTLB
+diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
+index 965a8cf4829c..1274e889d008 100644
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -480,7 +480,11 @@ static void __init setup_vm_final(void)
+ #else
+ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
+ {
++#if IS_ENABLED(CONFIG_USE_BUILTIN_DTB)
++	dtb_early_va = __dtb_start;
++#else
+ 	dtb_early_va = (void *)dtb_pa;
++#endif
+ }
+ 
+ static inline void setup_vm_final(void)
+-- 
+2.24.1
+

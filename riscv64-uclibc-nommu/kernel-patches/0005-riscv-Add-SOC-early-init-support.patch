@@ -1,0 +1,148 @@
+From 8c5d89a088752c7e95b6d4c7da41d540920e01a3 Mon Sep 17 00:00:00 2001
+From: Damien Le Moal <damien.lemoal@wdc.com>
+Date: Wed, 29 Jan 2020 13:03:45 +0530
+Subject: [PATCH 05/10] riscv: Add SOC early init support
+
+Add a mechanism for early SoC initialization for platforms that need
+additional hardware initialization not possible through the regular
+device tree and drivers mechanism. With this, a SoC specific
+initialization function can be called very early, before DTB parsing
+is done by parse_dtb() in Linux RISC-V kernel setup code.
+
+This can be very useful for early hardware initialization for No-MMU
+kernels booted directly in M-mode because it is quite likely that no
+other booting stage exist prior to the No-MMU kernel.
+
+Example use of a SoC early initialization is as follows:
+
+static void vendor_abc_early_init(const void *fdt)
+{
+	/*
+	 * some early init code here that can use simple matches
+	 * against the flat device tree file.
+	 */
+}
+SOC_EARLY_INIT_DECLARE("vendor,abc", abc_early_init);
+
+This early initialization function is executed only if the flat device
+tree for the board has a 'compatible = "vendor,abc"' entry;
+
+Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
+Signed-off-by: Anup Patel <anup.patel@wdc.com>
+---
+ arch/riscv/include/asm/soc.h    | 23 +++++++++++++++++++++++
+ arch/riscv/kernel/Makefile      |  1 +
+ arch/riscv/kernel/head.S        |  1 +
+ arch/riscv/kernel/soc.c         | 28 ++++++++++++++++++++++++++++
+ arch/riscv/kernel/vmlinux.lds.S |  6 ++++++
+ 5 files changed, 59 insertions(+)
+ create mode 100644 arch/riscv/include/asm/soc.h
+ create mode 100644 arch/riscv/kernel/soc.c
+
+diff --git a/arch/riscv/include/asm/soc.h b/arch/riscv/include/asm/soc.h
+new file mode 100644
+index 000000000000..9b8c332cbe76
+--- /dev/null
++++ b/arch/riscv/include/asm/soc.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++
++#ifndef _ASM_RISCV_SOC_H
++#define _ASM_RISCV_SOC_H
++
++#include <linux/of.h>
++#include <linux/linkage.h>
++#include <linux/types.h>
++
++#define SOC_EARLY_INIT_DECLARE(compat, fn)				\
++	static const struct of_device_id __soc_early_init		\
++		__used __section(__soc_early_init_table)		\
++		 = { .compatible = compat, .data = fn  }
++
++void soc_early_init(void);
++
++extern unsigned long __soc_early_init_table_start;
++extern unsigned long __soc_early_init_table_end;
++
++#endif
+diff --git a/arch/riscv/kernel/Makefile b/arch/riscv/kernel/Makefile
+index 97d0c35f8b37..e4a22999dbc6 100644
+--- a/arch/riscv/kernel/Makefile
++++ b/arch/riscv/kernel/Makefile
+@@ -10,6 +10,7 @@ endif
+ extra-y += head.o
+ extra-y += vmlinux.lds
+ 
++obj-y	+= soc.o
+ obj-y	+= cpu.o
+ obj-y	+= cpufeature.o
+ obj-y	+= entry.o
+diff --git a/arch/riscv/kernel/head.S b/arch/riscv/kernel/head.S
+index 271860fc2c3f..a7768d6165d4 100644
+--- a/arch/riscv/kernel/head.S
++++ b/arch/riscv/kernel/head.S
+@@ -125,6 +125,7 @@ clear_bss_done:
+ 	call kasan_early_init
+ #endif
+ 	/* Start the kernel */
++	call soc_early_init
+ 	call parse_dtb
+ 	tail start_kernel
+ 
+diff --git a/arch/riscv/kernel/soc.c b/arch/riscv/kernel/soc.c
+new file mode 100644
+index 000000000000..0b3b3dc9ad0f
+--- /dev/null
++++ b/arch/riscv/kernel/soc.c
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++#include <linux/init.h>
++#include <linux/libfdt.h>
++#include <asm/pgtable.h>
++#include <asm/soc.h>
++
++/*
++ * This is called extremly early, before parse_dtb(), to allow initializing
++ * SoC hardware before memory or any device driver initialization.
++ */
++void __init soc_early_init(void)
++{
++	void (*early_fn)(const void *fdt);
++	const struct of_device_id *s;
++	const void *fdt = dtb_early_va;
++
++	for (s = (void *)&__soc_early_init_table_start;
++	     (void *)s < (void *)&__soc_early_init_table_end; s++) {
++		if (!fdt_node_check_compatible(fdt, 0, s->compatible)) {
++			early_fn = s->data;
++			early_fn(fdt);
++			return;
++		}
++	}
++}
+diff --git a/arch/riscv/kernel/vmlinux.lds.S b/arch/riscv/kernel/vmlinux.lds.S
+index 1e0193ded420..32b160942f40 100644
+--- a/arch/riscv/kernel/vmlinux.lds.S
++++ b/arch/riscv/kernel/vmlinux.lds.S
+@@ -24,6 +24,12 @@ SECTIONS
+ 	HEAD_TEXT_SECTION
+ 	INIT_TEXT_SECTION(PAGE_SIZE)
+ 	INIT_DATA_SECTION(16)
++	. = ALIGN(8);
++	__soc_early_init_table : {
++		__soc_early_init_table_start = .;
++		KEEP(*(__soc_early_init_table))
++		__soc_early_init_table_end = .;
++	}
+ 	/* we have to discard exit text and such at runtime, not link time */
+ 	.exit.text :
+ 	{
+-- 
+2.24.1
+

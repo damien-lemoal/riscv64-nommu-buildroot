@@ -1,0 +1,200 @@
+From 7b54dcfa704016d2f722265739e75a0c172cbe86 Mon Sep 17 00:00:00 2001
+From: Damien Le Moal <damien.lemoal@wdc.com>
+Date: Fri, 17 Jan 2020 14:40:19 +0900
+Subject: [PATCH 08/10] riscv: Add Kendryte K210 device tree
+
+Add a generic device tree for Kendryte K210 SoC based boards. This (for
+now) very simple device tree works for the Kendryte KD233 development
+board, the Sipeed MAIX M1 Dock based boards and the Sipeed MAIXDUINO
+board.
+
+Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
+---
+ arch/riscv/boot/dts/Makefile           |   1 +
+ arch/riscv/boot/dts/kendryte/Makefile  |   2 +
+ arch/riscv/boot/dts/kendryte/k210.dts  |  23 +++++
+ arch/riscv/boot/dts/kendryte/k210.dtsi | 123 +++++++++++++++++++++++++
+ 4 files changed, 149 insertions(+)
+ create mode 100644 arch/riscv/boot/dts/kendryte/Makefile
+ create mode 100644 arch/riscv/boot/dts/kendryte/k210.dts
+ create mode 100644 arch/riscv/boot/dts/kendryte/k210.dtsi
+
+diff --git a/arch/riscv/boot/dts/Makefile b/arch/riscv/boot/dts/Makefile
+index 0bf2669aa12d..87815557f2db 100644
+--- a/arch/riscv/boot/dts/Makefile
++++ b/arch/riscv/boot/dts/Makefile
+@@ -3,4 +3,5 @@ ifneq ($(CONFIG_BUILTIN_DTB_SOURCE),"")
+ obj-$(CONFIG_USE_BUILTIN_DTB) += $(patsubst "%",%,$(CONFIG_BUILTIN_DTB_SOURCE)).dtb.o
+ else
+ subdir-y += sifive
++subdir-y += kendryte
+ endif
+diff --git a/arch/riscv/boot/dts/kendryte/Makefile b/arch/riscv/boot/dts/kendryte/Makefile
+new file mode 100644
+index 000000000000..815444e69e89
+--- /dev/null
++++ b/arch/riscv/boot/dts/kendryte/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++dtb-$(CONFIG_SOC_KENDRYTE) += k210.dtb
+diff --git a/arch/riscv/boot/dts/kendryte/k210.dts b/arch/riscv/boot/dts/kendryte/k210.dts
+new file mode 100644
+index 000000000000..0d1f28fce6b2
+--- /dev/null
++++ b/arch/riscv/boot/dts/kendryte/k210.dts
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++
++/dts-v1/;
++
++#include "k210.dtsi"
++
++/ {
++	model = "Kendryte K210 generic";
++	compatible = "kendryte,k210";
++
++	chosen {
++		bootargs = "earlycon console=ttySIF0";
++		stdout-path = "serial0";
++	};
++};
++
++&uarths0 {
++	status = "okay";
++};
++
+diff --git a/arch/riscv/boot/dts/kendryte/k210.dtsi b/arch/riscv/boot/dts/kendryte/k210.dtsi
+new file mode 100644
+index 000000000000..4b9eeabb07f7
+--- /dev/null
++++ b/arch/riscv/boot/dts/kendryte/k210.dtsi
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2019 Sean Anderson <seanga2@gmail.com>
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++
++/ {
++	/*
++	 * Although the K210 is a 64-bit CPU, the address bus is only 32-bits
++	 * wide, and the upper half of all addresses is ignored.
++	 */
++	#address-cells = <1>;
++	#size-cells = <1>;
++	compatible = "kendryte,k210";
++
++	aliases {
++		serial0 = &uarths0;
++	};
++
++	clocks {
++		in0: oscillator {
++			compatible = "fixed-clock";
++			#clock-cells = <0>;
++			clock-frequency = <26000000>;
++		};
++	};
++
++	cpus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++		timebase-frequency = <7800000>;
++		cpu0: cpu@0 {
++			device_type = "cpu";
++			reg = <0>;
++			compatible = "riscv";
++			riscv,isa = "rv64imafdc";
++			mmu-type = "none";
++			i-cache-size = <0x8000>;
++			i-cache-block-size = <64>; /* bogus */
++			d-cache-size = <0x8000>;
++			d-cache-block-size = <64>; /* bogus */
++			clocks = <&sysctl 0>;
++			clock-frequency = <390000000>;
++			cpu0_intc: interrupt-controller {
++				#interrupt-cells = <1>;
++				interrupt-controller;
++				compatible = "riscv,cpu-intc";
++			};
++		};
++		cpu1: cpu@1 {
++			device_type = "cpu";
++			reg = <1>;
++			compatible = "riscv";
++			riscv,isa = "rv64imafdc";
++			mmu-type = "none";
++			i-cache-size = <0x8000>;
++			i-cache-block-size = <64>; /* bogus */
++			d-cache-size = <0x8000>;
++			d-cache-block-size = <64>; /* bogus */
++			clocks = <&sysctl 0>;
++			clock-frequency = <390000000>;
++			cpu1_intc: interrupt-controller {
++				#interrupt-cells = <1>;
++				interrupt-controller;
++				compatible = "riscv,cpu-intc";
++			};
++		};
++	};
++
++	sram0: memory@80000000 {
++		device_type = "memory";
++		reg = <0x80000000 0x400000>;
++	};
++
++	sram1: memory@80400000 {
++		device_type = "memory";
++		reg = <0x80400000 0x200000>;
++	};
++
++	kpu_sram: memory@80600000 {
++		device_type = "memory";
++		reg = <0x80600000 0x200000>;
++	};
++
++	soc {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "kendryte,k210-soc", "simple-bus";
++		ranges;
++		interrupt-parent = <&plic0>;
++
++		sysctl: sysctl@50440000 {
++			compatible = "kendryte,k210-sysctl", "syscon";
++			reg = <0x50440000 0x1000>;
++			#clock-cells = <1>;
++		};
++
++		clint0: interrupt-controller@2000000 {
++			compatible = "riscv,clint0";
++			reg = <0x2000000 0xC000>;
++			interrupts-extended = <&cpu0_intc 3>,  <&cpu1_intc 3>;
++			clocks = <&sysctl 0>;
++		};
++
++		plic0: interrupt-controller@c000000 {
++			#interrupt-cells = <1>;
++			interrupt-controller;
++			compatible = "kendryte,k210-plic0", "riscv,plic0";
++			reg = <0xC000000 0x3FFF008>;
++			interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 0xffffffff>,
++					      <&cpu1_intc 11>, <&cpu1_intc 0xffffffff>;
++			riscv,ndev = <65>;
++			riscv,max-priority = <0x07>;
++		};
++
++		uarths0: serial@38000000 {
++			compatible = "kendryte,k210-uart0", "sifive,uart0";
++			reg = <0x38000000 0x20>;
++			interrupts = <33>;
++			clocks = <&sysctl 0>;
++		};
++	};
++};
+-- 
+2.24.1
+

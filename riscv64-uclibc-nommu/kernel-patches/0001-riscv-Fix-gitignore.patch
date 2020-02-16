@@ -1,0 +1,25 @@
+From d69c4b7b0edf5deeda2be2942bfe36f217057189 Mon Sep 17 00:00:00 2001
+From: Damien Le Moal <damien.lemoal@wdc.com>
+Date: Fri, 17 Jan 2020 13:55:13 +0900
+Subject: [PATCH 01/10] riscv: Fix gitignore
+
+Tell git to not track the compiled boot/loader and boot/loader.lds
+files.
+
+Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
+---
+ arch/riscv/boot/.gitignore | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/riscv/boot/.gitignore b/arch/riscv/boot/.gitignore
+index 8dab0bb6ae66..8a45a37d2af4 100644
+--- a/arch/riscv/boot/.gitignore
++++ b/arch/riscv/boot/.gitignore
+@@ -1,2 +1,4 @@
+ Image
+ Image.gz
++loader
++loader.lds
+-- 
+2.24.1
+

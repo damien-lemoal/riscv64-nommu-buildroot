@@ -1,0 +1,52 @@
+From a2b5be1c43747f24722dc6a5ceeb7d9f9d26bdbe Mon Sep 17 00:00:00 2001
+From: Christoph Hellwig <hch@lst.de>
+Date: Mon, 20 Jan 2020 11:40:31 +0900
+Subject: [PATCH 10/10] riscv: create a loader.bin for the kendryte kflash.py
+ tool
+
+This can be loaded into the Kendryte KD210 based boards using:
+
+kflash.py/kflash.py -t arch/riscv/boot/loader.bin
+
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
+---
+ arch/riscv/Makefile      | 4 ++--
+ arch/riscv/boot/Makefile | 3 +++
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/arch/riscv/Makefile b/arch/riscv/Makefile
+index b9009a2fbaf5..440969763e14 100644
+--- a/arch/riscv/Makefile
++++ b/arch/riscv/Makefile
+@@ -84,11 +84,11 @@ vdso_install:
+ 	$(Q)$(MAKE) $(build)=arch/riscv/kernel/vdso $@
+ 
+ ifeq ($(CONFIG_RISCV_M_MODE),y)
+-KBUILD_IMAGE := $(boot)/loader
++KBUILD_IMAGE := $(boot)/loader.bin
+ else
+ KBUILD_IMAGE := $(boot)/Image.gz
+ endif
+-BOOT_TARGETS := Image Image.gz loader
++BOOT_TARGETS := Image Image.gz loader loader.bin
+ 
+ all:	$(notdir $(KBUILD_IMAGE))
+ 
+diff --git a/arch/riscv/boot/Makefile b/arch/riscv/boot/Makefile
+index 36db8145f9f4..3530c59b3ea7 100644
+--- a/arch/riscv/boot/Makefile
++++ b/arch/riscv/boot/Makefile
+@@ -41,6 +41,9 @@ $(obj)/Image.lzma: $(obj)/Image FORCE
+ $(obj)/Image.lzo: $(obj)/Image FORCE
+ 	$(call if_changed,lzo)
+ 
++$(obj)/loader.bin: $(obj)/loader FORCE
++	$(call if_changed,objcopy)
++
+ install:
+ 	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh $(KERNELRELEASE) \
+ 	$(obj)/Image System.map "$(INSTALL_PATH)"
+-- 
+2.24.1
+
