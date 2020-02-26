@@ -1,0 +1,1251 @@
+diff --git a/arch/riscv/boot/.gitignore b/arch/riscv/boot/.gitignore
+index 8dab0bb6ae66..8a45a37d2af4 100644
+--- a/arch/riscv/boot/.gitignore
++++ b/arch/riscv/boot/.gitignore
+@@ -1,2 +1,4 @@
+ Image
+ Image.gz
++loader
++loader.lds
+diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
+index 73f029eae0cc..1a3b5a5276be 100644
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -121,6 +121,7 @@ config ARCH_FLATMEM_ENABLE
+ 
+ config ARCH_SPARSEMEM_ENABLE
+ 	def_bool y
++	depends on MMU
+ 	select SPARSEMEM_VMEMMAP_ENABLE
+ 
+ config ARCH_SELECT_MEMORY_MODEL
+diff --git a/arch/riscv/kernel/Makefile b/arch/riscv/kernel/Makefile
+index f40205cb9a22..97d0c35f8b37 100644
+--- a/arch/riscv/kernel/Makefile
++++ b/arch/riscv/kernel/Makefile
+@@ -28,7 +28,7 @@ obj-y	+= stacktrace.o
+ obj-y	+= cacheinfo.o
+ obj-$(CONFIG_MMU) += vdso.o vdso/
+ 
+-obj-$(CONFIG_RISCV_M_MODE)	+= clint.o
++obj-$(CONFIG_RISCV_M_MODE)	+= clint.o traps_misaligned.o
+ obj-$(CONFIG_FPU)		+= fpu.o
+ obj-$(CONFIG_SMP)		+= smpboot.o
+ obj-$(CONFIG_SMP)		+= smp.o
+diff --git a/arch/riscv/kernel/traps.c b/arch/riscv/kernel/traps.c
+index ffb3d94bf0cc..13e55459d7b0 100644
+--- a/arch/riscv/kernel/traps.c
++++ b/arch/riscv/kernel/traps.c
+@@ -97,12 +97,33 @@ DO_ERROR_INFO(do_trap_insn_fault,
+ 	SIGSEGV, SEGV_ACCERR, "instruction access fault");
+ DO_ERROR_INFO(do_trap_insn_illegal,
+ 	SIGILL, ILL_ILLOPC, "illegal instruction");
+-DO_ERROR_INFO(do_trap_load_misaligned,
+-	SIGBUS, BUS_ADRALN, "load address misaligned");
+ DO_ERROR_INFO(do_trap_load_fault,
+ 	SIGSEGV, SEGV_ACCERR, "load access fault");
++#ifndef CONFIG_RISCV_M_MODE
++DO_ERROR_INFO(do_trap_load_misaligned,
++	SIGBUS, BUS_ADRALN, "Oops - load address misaligned");
+ DO_ERROR_INFO(do_trap_store_misaligned,
+-	SIGBUS, BUS_ADRALN, "store (or AMO) address misaligned");
++	SIGBUS, BUS_ADRALN, "Oops - store (or AMO) address misaligned");
++#else
++int handle_misaligned_load(struct pt_regs *regs);
++int handle_misaligned_store(struct pt_regs *regs);
++
++asmlinkage void do_trap_load_misaligned(struct pt_regs *regs)
++{
++	if (!handle_misaligned_load(regs))
++		return;
++	do_trap_error(regs, SIGBUS, BUS_ADRALN, regs->epc,
++		      "Oops - load address misaligned");
++}
++
++asmlinkage void do_trap_store_misaligned(struct pt_regs *regs)
++{
++	if (!handle_misaligned_store(regs))
++		return;
++	do_trap_error(regs, SIGBUS, BUS_ADRALN, regs->epc,
++		      "Oops - store (or AMO) address misaligned");
++}
++#endif
+ DO_ERROR_INFO(do_trap_store_fault,
+ 	SIGSEGV, SEGV_ACCERR, "store (or AMO) access fault");
+ DO_ERROR_INFO(do_trap_ecall_u,
+diff --git a/arch/riscv/kernel/traps_misaligned.c b/arch/riscv/kernel/traps_misaligned.c
+new file mode 100644
+index 000000000000..a6105ee0150f
+--- /dev/null
++++ b/arch/riscv/kernel/traps_misaligned.c
+@@ -0,0 +1,371 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/mm.h>
++#include <linux/module.h>
++#include <linux/irq.h>
++
++#include <asm/processor.h>
++#include <asm/ptrace.h>
++#include <asm/csr.h>
++
++#define INSN_MATCH_LB			0x3
++#define INSN_MASK_LB			0x707f
++#define INSN_MATCH_LH			0x1003
++#define INSN_MASK_LH			0x707f
++#define INSN_MATCH_LW			0x2003
++#define INSN_MASK_LW			0x707f
++#define INSN_MATCH_LD			0x3003
++#define INSN_MASK_LD			0x707f
++#define INSN_MATCH_LBU			0x4003
++#define INSN_MASK_LBU			0x707f
++#define INSN_MATCH_LHU			0x5003
++#define INSN_MASK_LHU			0x707f
++#define INSN_MATCH_LWU			0x6003
++#define INSN_MASK_LWU			0x707f
++#define INSN_MATCH_SB			0x23
++#define INSN_MASK_SB			0x707f
++#define INSN_MATCH_SH			0x1023
++#define INSN_MASK_SH			0x707f
++#define INSN_MATCH_SW			0x2023
++#define INSN_MASK_SW			0x707f
++#define INSN_MATCH_SD			0x3023
++#define INSN_MASK_SD			0x707f
++
++#define INSN_MATCH_FLW			0x2007
++#define INSN_MASK_FLW			0x707f
++#define INSN_MATCH_FLD			0x3007
++#define INSN_MASK_FLD			0x707f
++#define INSN_MATCH_FLQ			0x4007
++#define INSN_MASK_FLQ			0x707f
++#define INSN_MATCH_FSW			0x2027
++#define INSN_MASK_FSW			0x707f
++#define INSN_MATCH_FSD			0x3027
++#define INSN_MASK_FSD			0x707f
++#define INSN_MATCH_FSQ			0x4027
++#define INSN_MASK_FSQ			0x707f
++
++#define INSN_MATCH_C_LD			0x6000
++#define INSN_MASK_C_LD			0xe003
++#define INSN_MATCH_C_SD			0xe000
++#define INSN_MASK_C_SD			0xe003
++#define INSN_MATCH_C_LW			0x4000
++#define INSN_MASK_C_LW			0xe003
++#define INSN_MATCH_C_SW			0xc000
++#define INSN_MASK_C_SW			0xe003
++#define INSN_MATCH_C_LDSP		0x6002
++#define INSN_MASK_C_LDSP		0xe003
++#define INSN_MATCH_C_SDSP		0xe002
++#define INSN_MASK_C_SDSP		0xe003
++#define INSN_MATCH_C_LWSP		0x4002
++#define INSN_MASK_C_LWSP		0xe003
++#define INSN_MATCH_C_SWSP		0xc002
++#define INSN_MASK_C_SWSP		0xe003
++
++#define INSN_MATCH_C_FLD		0x2000
++#define INSN_MASK_C_FLD			0xe003
++#define INSN_MATCH_C_FLW		0x6000
++#define INSN_MASK_C_FLW			0xe003
++#define INSN_MATCH_C_FSD		0xa000
++#define INSN_MASK_C_FSD			0xe003
++#define INSN_MATCH_C_FSW		0xe000
++#define INSN_MASK_C_FSW			0xe003
++#define INSN_MATCH_C_FLDSP		0x2002
++#define INSN_MASK_C_FLDSP		0xe003
++#define INSN_MATCH_C_FSDSP		0xa002
++#define INSN_MASK_C_FSDSP		0xe003
++#define INSN_MATCH_C_FLWSP		0x6002
++#define INSN_MASK_C_FLWSP		0xe003
++#define INSN_MATCH_C_FSWSP		0xe002
++#define INSN_MASK_C_FSWSP		0xe003
++
++#define INSN_LEN(insn)			((((insn) & 0x3) < 0x3) ? 2 : 4)
++
++#if __riscv_xlen == 64
++#define LOG_REGBYTES			3
++#else
++#define LOG_REGBYTES			2
++#endif
++#define REGBYTES			(1 << LOG_REGBYTES)
++
++#define SH_RD				7
++#define SH_RS1				15
++#define SH_RS2				20
++#define SH_RS2C				2
++
++#define RV_X(x, s, n)			(((x) >> (s)) & ((1 << (n)) - 1))
++#define RVC_LW_IMM(x)			((RV_X(x, 6, 1) << 2) | \
++					 (RV_X(x, 10, 3) << 3) | \
++					 (RV_X(x, 5, 1) << 6))
++#define RVC_LD_IMM(x)			((RV_X(x, 10, 3) << 3) | \
++					 (RV_X(x, 5, 2) << 6))
++#define RVC_LWSP_IMM(x)			((RV_X(x, 4, 3) << 2) | \
++					 (RV_X(x, 12, 1) << 5) | \
++					 (RV_X(x, 2, 2) << 6))
++#define RVC_LDSP_IMM(x)			((RV_X(x, 5, 2) << 3) | \
++					 (RV_X(x, 12, 1) << 5) | \
++					 (RV_X(x, 2, 3) << 6))
++#define RVC_SWSP_IMM(x)			((RV_X(x, 9, 4) << 2) | \
++					 (RV_X(x, 7, 2) << 6))
++#define RVC_SDSP_IMM(x)			((RV_X(x, 10, 3) << 3) | \
++					 (RV_X(x, 7, 3) << 6))
++#define RVC_RS1S(insn)			(8 + RV_X(insn, SH_RD, 3))
++#define RVC_RS2S(insn)			(8 + RV_X(insn, SH_RS2C, 3))
++#define RVC_RS2(insn)			RV_X(insn, SH_RS2C, 5)
++
++#define SHIFT_RIGHT(x, y)		\
++	((y) < 0 ? ((x) << -(y)) : ((x) >> (y)))
++
++#define REG_MASK			\
++	((1 << (5 + LOG_REGBYTES)) - (1 << LOG_REGBYTES))
++
++#define REG_OFFSET(insn, pos)		\
++	(SHIFT_RIGHT((insn), (pos) - LOG_REGBYTES) & REG_MASK)
++
++#define REG_PTR(insn, pos, regs)	\
++	(ulong *)((ulong)(regs) + REG_OFFSET(insn, pos))
++
++#define GET_RM(insn)			(((insn) >> 12) & 7)
++
++#define GET_RS1(insn, regs)		(*REG_PTR(insn, SH_RS1, regs))
++#define GET_RS2(insn, regs)		(*REG_PTR(insn, SH_RS2, regs))
++#define GET_RS1S(insn, regs)		(*REG_PTR(RVC_RS1S(insn), 0, regs))
++#define GET_RS2S(insn, regs)		(*REG_PTR(RVC_RS2S(insn), 0, regs))
++#define GET_RS2C(insn, regs)		(*REG_PTR(insn, SH_RS2C, regs))
++#define GET_SP(regs)			(*REG_PTR(2, 0, regs))
++#define SET_RD(insn, regs, val)		(*REG_PTR(insn, SH_RD, regs) = (val))
++#define IMM_I(insn)			((s32)(insn) >> 20)
++#define IMM_S(insn)			(((s32)(insn) >> 25 << 5) | \
++					 (s32)(((insn) >> 7) & 0x1f))
++#define MASK_FUNCT3			0x7000
++
++#define GET_PRECISION(insn) (((insn) >> 25) & 3)
++#define GET_RM(insn) (((insn) >> 12) & 7)
++#define PRECISION_S 0
++#define PRECISION_D 1
++
++#define STR(x) XSTR(x)
++#define XSTR(x) #x
++
++#define DECLARE_UNPRIVILEGED_LOAD_FUNCTION(type, insn)			\
++static inline type load_##type(const type *addr)			\
++{									\
++	type val;							\
++	asm (#insn " %0, %1"						\
++	: "=&r" (val) : "m" (*addr));					\
++	return val;							\
++}
++
++#define DECLARE_UNPRIVILEGED_STORE_FUNCTION(type, insn)			\
++static inline void store_##type(type *addr, type val)			\
++{									\
++	asm volatile (#insn " %0, %1\n"					\
++	: : "r" (val), "m" (*addr));					\
++}
++
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u8, lbu)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u16, lhu)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(s8, lb)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(s16, lh)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(s32, lw)
++DECLARE_UNPRIVILEGED_STORE_FUNCTION(u8, sb)
++DECLARE_UNPRIVILEGED_STORE_FUNCTION(u16, sh)
++DECLARE_UNPRIVILEGED_STORE_FUNCTION(u32, sw)
++#if __riscv_xlen == 64
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u32, lwu)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u64, ld)
++DECLARE_UNPRIVILEGED_STORE_FUNCTION(u64, sd)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(ulong, ld)
++#else
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u32, lw)
++DECLARE_UNPRIVILEGED_LOAD_FUNCTION(ulong, lw)
++
++static inline u64 load_u64(const u64 *addr)
++{
++	return load_u32((u32 *)addr)
++		+ ((u64)load_u32((u32 *)addr + 1) << 32);
++}
++
++static inline void store_u64(u64 *addr, u64 val)
++{
++	store_u32((u32 *)addr, val);
++	store_u32((u32 *)addr + 1, val >> 32);
++}
++#endif
++
++static inline ulong get_insn(ulong mepc)
++{
++	register ulong __mepc asm ("a2") = mepc;
++	ulong val, rvc_mask = 3, tmp;
++
++	asm ("and %[tmp], %[addr], 2\n"
++		"bnez %[tmp], 1f\n"
++#if __riscv_xlen == 64
++		STR(LWU) " %[insn], (%[addr])\n"
++#else
++		STR(LW) " %[insn], (%[addr])\n"
++#endif
++		"and %[tmp], %[insn], %[rvc_mask]\n"
++		"beq %[tmp], %[rvc_mask], 2f\n"
++		"sll %[insn], %[insn], %[xlen_minus_16]\n"
++		"srl %[insn], %[insn], %[xlen_minus_16]\n"
++		"j 2f\n"
++		"1:\n"
++		"lhu %[insn], (%[addr])\n"
++		"and %[tmp], %[insn], %[rvc_mask]\n"
++		"bne %[tmp], %[rvc_mask], 2f\n"
++		"lhu %[tmp], 2(%[addr])\n"
++		"sll %[tmp], %[tmp], 16\n"
++		"add %[insn], %[insn], %[tmp]\n"
++		"2:"
++	: [insn] "=&r" (val), [tmp] "=&r" (tmp)
++	: [addr] "r" (__mepc), [rvc_mask] "r" (rvc_mask),
++	  [xlen_minus_16] "i" (__riscv_xlen - 16));
++
++	return val;
++}
++
++union reg_data {
++	u8 data_bytes[8];
++	ulong data_ulong;
++	u64 data_u64;
++};
++
++int handle_misaligned_load(struct pt_regs *regs)
++{
++	union reg_data val;
++	unsigned long epc = regs->epc;
++	unsigned long insn = get_insn(epc);
++	unsigned long addr = csr_read(mtval);
++	int i, fp = 0, shift = 0, len = 0;
++
++	regs->epc = 0;
++
++	if ((insn & INSN_MASK_LW) == INSN_MATCH_LW) {
++		len = 4;
++		shift = 8 * (sizeof(unsigned long) - len);
++#if __riscv_xlen == 64
++	} else if ((insn & INSN_MASK_LD) == INSN_MATCH_LD) {
++		len = 8;
++		shift = 8 * (sizeof(unsigned long) - len);
++	} else if ((insn & INSN_MASK_LWU) == INSN_MATCH_LWU) {
++		len = 4;
++#endif
++	} else if ((insn & INSN_MASK_FLD) == INSN_MATCH_FLD) {
++		fp = 1;
++		len = 8;
++	} else if ((insn & INSN_MASK_FLW) == INSN_MATCH_FLW) {
++		fp = 1;
++		len = 4;
++	} else if ((insn & INSN_MASK_LH) == INSN_MATCH_LH) {
++		len = 2;
++		shift = 8 * (sizeof(unsigned long) - len);
++	} else if ((insn & INSN_MASK_LHU) == INSN_MATCH_LHU) {
++		len = 2;
++#ifdef __riscv_compressed
++#if __riscv_xlen >= 64
++	} else if ((insn & INSN_MASK_C_LD) == INSN_MATCH_C_LD) {
++		len = 8;
++		shift = 8 * (sizeof(unsigned long) - len);
++		insn = RVC_RS2S(insn) << SH_RD;
++	} else if ((insn & INSN_MASK_C_LDSP) == INSN_MATCH_C_LDSP &&
++		   ((insn >> SH_RD) & 0x1f)) {
++		len = 8;
++		shift = 8 * (sizeof(unsigned long) - len);
++#endif
++	} else if ((insn & INSN_MASK_C_LW) == INSN_MATCH_C_LW) {
++		len = 4;
++		shift = 8 * (sizeof(unsigned long) - len);
++		insn = RVC_RS2S(insn) << SH_RD;
++	} else if ((insn & INSN_MASK_C_LWSP) == INSN_MATCH_C_LWSP &&
++		   ((insn >> SH_RD) & 0x1f)) {
++		len = 4;
++		shift = 8 * (sizeof(unsigned long) - len);
++	} else if ((insn & INSN_MASK_C_FLD) == INSN_MATCH_C_FLD) {
++		fp = 1;
++		len = 8;
++		insn = RVC_RS2S(insn) << SH_RD;
++	} else if ((insn & INSN_MASK_C_FLDSP) == INSN_MATCH_C_FLDSP) {
++		fp = 1;
++		len = 8;
++#if __riscv_xlen == 32
++	} else if ((insn & INSN_MASK_C_FLW) == INSN_MATCH_C_FLW) {
++		fp = 1;
++		len = 4;
++		insn = RVC_RS2S(insn) << SH_RD;
++	} else if ((insn & INSN_MASK_C_FLWSP) == INSN_MATCH_C_FLWSP) {
++		fp = 1;
++		len = 4;
++#endif
++#endif
++	} else {
++		regs->epc = epc;
++		return -1;
++	}
++
++	val.data_u64 = 0;
++	for (i = 0; i < len; i++)
++		val.data_bytes[i] = load_u8((void *)(addr + i));
++
++	if (fp)
++		return -1;
++	SET_RD(insn, regs, val.data_ulong << shift >> shift);
++
++	regs->epc = epc + INSN_LEN(insn);
++
++	return 0;
++}
++
++int handle_misaligned_store(struct pt_regs *regs)
++{
++	union reg_data val;
++	unsigned long epc = regs->epc;
++	unsigned long insn = get_insn(epc);
++	unsigned long addr = csr_read(mtval);
++	int i, len = 0;
++
++	regs->epc = 0;
++
++	val.data_ulong = GET_RS2(insn, regs);
++
++	if ((insn & INSN_MASK_SW) == INSN_MATCH_SW) {
++		len = 4;
++#if __riscv_xlen == 64
++	} else if ((insn & INSN_MASK_SD) == INSN_MATCH_SD) {
++		len = 8;
++#endif
++	} else if ((insn & INSN_MASK_SH) == INSN_MATCH_SH) {
++		len = 2;
++#ifdef __riscv_compressed
++#if __riscv_xlen >= 64
++	} else if ((insn & INSN_MASK_C_SD) == INSN_MATCH_C_SD) {
++		len = 8;
++		val.data_ulong = GET_RS2S(insn, regs);
++	} else if ((insn & INSN_MASK_C_SDSP) == INSN_MATCH_C_SDSP &&
++		   ((insn >> SH_RD) & 0x1f)) {
++		len = 8;
++		val.data_ulong = GET_RS2C(insn, regs);
++#endif
++	} else if ((insn & INSN_MASK_C_SW) == INSN_MATCH_C_SW) {
++		len = 4;
++		val.data_ulong = GET_RS2S(insn, regs);
++	} else if ((insn & INSN_MASK_C_SWSP) == INSN_MATCH_C_SWSP &&
++		   ((insn >> SH_RD) & 0x1f)) {
++		len = 4;
++		val.data_ulong = GET_RS2C(insn, regs);
++#endif
++	} else {
++		regs->epc = epc;
++		return -1;
++	}
++
++	for (i = 0; i < len; i++)
++		store_u8((void *)(addr + i), val.data_bytes[i]);
++
++	regs->epc = epc + INSN_LEN(insn);
++
++	return 0;
++}
+diff --git a/arch/riscv/Kbuild b/arch/riscv/Kbuild
+index d1d0aa70fdf1..988804e430e4 100644
+--- a/arch/riscv/Kbuild
++++ b/arch/riscv/Kbuild
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ 
+ obj-y += kernel/ mm/ net/
++obj-$(CONFIG_USE_BUILTIN_DTB)	+= boot/dts/
+diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
+index 1a3b5a5276be..28899e15f548 100644
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -355,6 +355,24 @@ config CMDLINE_FORCE
+ 
+ endchoice
+ 
++config USE_BUILTIN_DTB
++	bool "Use builtin DTB"
++	help
++	  Link a device tree blob for particular hardware into the kernel,
++	  suppressing use of the DTB pointer provided by the bootloader.
++	  This option should only be used with hardware or bootloaders that
++	  are not capable of providing a DTB to the kernel, or for
++	  experimental hardware without stable device tree bindings.
++
++config BUILTIN_DTB_SOURCE
++	string "Source file for builtin DTB"
++	default ""
++	depends on USE_BUILTIN_DTB
++	help
++	  Base name (without suffix, relative to arch/riscv/boot/dts) for
++	  the a DTS file that will be used to produce the DTB linked into
++	  the kernel.
++
+ endmenu
+ 
+ menu "Power management options"
+diff --git a/arch/riscv/boot/dts/Makefile b/arch/riscv/boot/dts/Makefile
+index dcc3ada78455..0bf2669aa12d 100644
+--- a/arch/riscv/boot/dts/Makefile
++++ b/arch/riscv/boot/dts/Makefile
+@@ -1,2 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
++ifneq ($(CONFIG_BUILTIN_DTB_SOURCE),"")
++obj-$(CONFIG_USE_BUILTIN_DTB) += $(patsubst "%",%,$(CONFIG_BUILTIN_DTB_SOURCE)).dtb.o
++else
+ subdir-y += sifive
++endif
+diff --git a/arch/riscv/kernel/setup.c b/arch/riscv/kernel/setup.c
+index 0a6d415b0a5a..3e89be9d888c 100644
+--- a/arch/riscv/kernel/setup.c
++++ b/arch/riscv/kernel/setup.c
+@@ -68,7 +68,13 @@ void __init setup_arch(char **cmdline_p)
+ 
+ 	setup_bootmem();
+ 	paging_init();
++
++#if IS_ENABLED(CONFIG_USE_BUILTIN_DTB)
++	unflatten_and_copy_device_tree();
++#else
+ 	unflatten_device_tree();
++#endif
++
+ 	clint_init_boot_cpu();
+ 
+ #ifdef CONFIG_SWIOTLB
+diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
+index 965a8cf4829c..1274e889d008 100644
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -480,7 +480,11 @@ static void __init setup_vm_final(void)
+ #else
+ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
+ {
++#if IS_ENABLED(CONFIG_USE_BUILTIN_DTB)
++	dtb_early_va = __dtb_start;
++#else
+ 	dtb_early_va = (void *)dtb_pa;
++#endif
+ }
+ 
+ static inline void setup_vm_final(void)
+diff --git a/arch/riscv/include/asm/soc.h b/arch/riscv/include/asm/soc.h
+new file mode 100644
+index 000000000000..9b8c332cbe76
+--- /dev/null
++++ b/arch/riscv/include/asm/soc.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++
++#ifndef _ASM_RISCV_SOC_H
++#define _ASM_RISCV_SOC_H
++
++#include <linux/of.h>
++#include <linux/linkage.h>
++#include <linux/types.h>
++
++#define SOC_EARLY_INIT_DECLARE(compat, fn)				\
++	static const struct of_device_id __soc_early_init		\
++		__used __section(__soc_early_init_table)		\
++		 = { .compatible = compat, .data = fn  }
++
++void soc_early_init(void);
++
++extern unsigned long __soc_early_init_table_start;
++extern unsigned long __soc_early_init_table_end;
++
++#endif
+diff --git a/arch/riscv/kernel/Makefile b/arch/riscv/kernel/Makefile
+index 97d0c35f8b37..e4a22999dbc6 100644
+--- a/arch/riscv/kernel/Makefile
++++ b/arch/riscv/kernel/Makefile
+@@ -10,6 +10,7 @@ endif
+ extra-y += head.o
+ extra-y += vmlinux.lds
+ 
++obj-y	+= soc.o
+ obj-y	+= cpu.o
+ obj-y	+= cpufeature.o
+ obj-y	+= entry.o
+diff --git a/arch/riscv/kernel/head.S b/arch/riscv/kernel/head.S
+index 271860fc2c3f..a7768d6165d4 100644
+--- a/arch/riscv/kernel/head.S
++++ b/arch/riscv/kernel/head.S
+@@ -125,6 +125,7 @@ clear_bss_done:
+ 	call kasan_early_init
+ #endif
+ 	/* Start the kernel */
++	call soc_early_init
+ 	call parse_dtb
+ 	tail start_kernel
+ 
+diff --git a/arch/riscv/kernel/soc.c b/arch/riscv/kernel/soc.c
+new file mode 100644
+index 000000000000..0b3b3dc9ad0f
+--- /dev/null
++++ b/arch/riscv/kernel/soc.c
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++#include <linux/init.h>
++#include <linux/libfdt.h>
++#include <asm/pgtable.h>
++#include <asm/soc.h>
++
++/*
++ * This is called extremly early, before parse_dtb(), to allow initializing
++ * SoC hardware before memory or any device driver initialization.
++ */
++void __init soc_early_init(void)
++{
++	void (*early_fn)(const void *fdt);
++	const struct of_device_id *s;
++	const void *fdt = dtb_early_va;
++
++	for (s = (void *)&__soc_early_init_table_start;
++	     (void *)s < (void *)&__soc_early_init_table_end; s++) {
++		if (!fdt_node_check_compatible(fdt, 0, s->compatible)) {
++			early_fn = s->data;
++			early_fn(fdt);
++			return;
++		}
++	}
++}
+diff --git a/arch/riscv/kernel/vmlinux.lds.S b/arch/riscv/kernel/vmlinux.lds.S
+index 1e0193ded420..32b160942f40 100644
+--- a/arch/riscv/kernel/vmlinux.lds.S
++++ b/arch/riscv/kernel/vmlinux.lds.S
+@@ -24,6 +24,12 @@ SECTIONS
+ 	HEAD_TEXT_SECTION
+ 	INIT_TEXT_SECTION(PAGE_SIZE)
+ 	INIT_DATA_SECTION(16)
++	. = ALIGN(8);
++	__soc_early_init_table : {
++		__soc_early_init_table_start = .;
++		KEEP(*(__soc_early_init_table))
++		__soc_early_init_table_end = .;
++	}
+ 	/* we have to discard exit text and such at runtime, not link time */
+ 	.exit.text :
+ 	{
+diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
+index d325b67d00df..4d5d4a65b2a2 100644
+--- a/arch/riscv/Kconfig.socs
++++ b/arch/riscv/Kconfig.socs
+@@ -10,4 +10,10 @@ config SOC_SIFIVE
+ 	help
+ 	  This enables support for SiFive SoC platform hardware.
+ 
++config SOC_KENDRYTE
++	bool "Kendryte K210 SoC"
++	depends on !MMU
++	help
++	  This enables support for Kendryte K210 SoC hardware.
++
+ endmenu
+diff --git a/drivers/soc/Kconfig b/drivers/soc/Kconfig
+index 1778f8c62861..425ab6f7e375 100644
+--- a/drivers/soc/Kconfig
++++ b/drivers/soc/Kconfig
+@@ -22,5 +22,6 @@ source "drivers/soc/ux500/Kconfig"
+ source "drivers/soc/versatile/Kconfig"
+ source "drivers/soc/xilinx/Kconfig"
+ source "drivers/soc/zte/Kconfig"
++source "drivers/soc/kendryte/Kconfig"
+ 
+ endmenu
+diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
+index 8b49d782a1ab..af58063bb989 100644
+--- a/drivers/soc/Makefile
++++ b/drivers/soc/Makefile
+@@ -28,3 +28,4 @@ obj-$(CONFIG_ARCH_U8500)	+= ux500/
+ obj-$(CONFIG_PLAT_VERSATILE)	+= versatile/
+ obj-y				+= xilinx/
+ obj-$(CONFIG_ARCH_ZX)		+= zte/
++obj-$(CONFIG_SOC_KENDRYTE)	+= kendryte/
+diff --git a/drivers/soc/kendryte/Kconfig b/drivers/soc/kendryte/Kconfig
+new file mode 100644
+index 000000000000..49785b1b0217
+--- /dev/null
++++ b/drivers/soc/kendryte/Kconfig
+@@ -0,0 +1,14 @@
++# SPDX-License-Identifier: GPL-2.0
++
++if SOC_KENDRYTE
++
++config K210_SYSCTL
++	bool "Kendryte K210 system controller"
++	default y
++	depends on RISCV
++	help
++	  Enables controlling the K210 various clocks and to enable
++	  general purpose use of the extra 2MB of SRAM normally
++	  reserved for the AI engine.
++
++endif
+diff --git a/drivers/soc/kendryte/Makefile b/drivers/soc/kendryte/Makefile
+new file mode 100644
+index 000000000000..002d9ce95c0d
+--- /dev/null
++++ b/drivers/soc/kendryte/Makefile
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: GPL-2.0
++
++obj-$(CONFIG_K210_SYSCTL)	+= k210-sysctl.o
+diff --git a/drivers/soc/kendryte/k210-sysctl.c b/drivers/soc/kendryte/k210-sysctl.c
+new file mode 100644
+index 000000000000..7d4ecd954af0
+--- /dev/null
++++ b/drivers/soc/kendryte/k210-sysctl.c
+@@ -0,0 +1,245 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (c) 2019 Christoph Hellwig.
++ * Copyright (c) 2019 Western Digital Corporation or its affiliates.
++ */
++#include <linux/types.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/clk-provider.h>
++#include <linux/clkdev.h>
++#include <asm/soc.h>
++
++#define K210_SYSCTL_CLK0_FREQ		26000000UL
++
++/* Registers base address */
++#define K210_SYSCTL_SYSCTL_BASE_ADDR	0x50440000ULL
++
++/* Registers */
++#define K210_SYSCTL_PLL0		0x08
++#define K210_SYSCTL_PLL1		0x0c
++/* clkr: 4bits, clkf1: 6bits, clkod: 4bits, bwadj: 4bits */
++#define   PLL_RESET		(1 << 20)
++#define   PLL_PWR		(1 << 21)
++#define   PLL_INTFB		(1 << 22)
++#define   PLL_BYPASS		(1 << 23)
++#define   PLL_TEST		(1 << 24)
++#define   PLL_OUT_EN		(1 << 25)
++#define   PLL_TEST_EN		(1 << 26)
++#define K210_SYSCTL_PLL_LOCK		0x18
++#define   PLL0_LOCK1		(1 << 0)
++#define   PLL0_LOCK2		(1 << 1)
++#define   PLL0_SLIP_CLEAR	(1 << 2)
++#define   PLL0_TEST_CLK_OUT	(1 << 3)
++#define   PLL1_LOCK1		(1 << 8)
++#define   PLL1_LOCK2		(1 << 9)
++#define   PLL1_SLIP_CLEAR	(1 << 10)
++#define   PLL1_TEST_CLK_OUT	(1 << 11)
++#define   PLL2_LOCK1		(1 << 16)
++#define   PLL2_LOCK2		(1 << 16)
++#define   PLL2_SLIP_CLEAR	(1 << 18)
++#define   PLL2_TEST_CLK_OUT	(1 << 19)
++#define K210_SYSCTL_CLKSEL0	0x20
++#define   CLKSEL_ACLK		(1 << 0)
++#define K210_SYSCTL_CLKEN_CENT		0x28
++#define   CLKEN_CPU		(1 << 0)
++#define   CLKEN_SRAM0		(1 << 1)
++#define   CLKEN_SRAM1		(1 << 2)
++#define   CLKEN_APB0		(1 << 3)
++#define   CLKEN_APB1		(1 << 4)
++#define   CLKEN_APB2		(1 << 5)
++#define K210_SYSCTL_CLKEN_PERI		0x2c
++#define   CLKEN_ROM		(1 << 0)
++#define   CLKEN_DMA		(1 << 1)
++#define   CLKEN_AI		(1 << 2)
++#define   CLKEN_DVP		(1 << 3)
++#define   CLKEN_FFT		(1 << 4)
++#define   CLKEN_GPIO		(1 << 5)
++#define   CLKEN_SPI0		(1 << 6)
++#define   CLKEN_SPI1		(1 << 7)
++#define   CLKEN_SPI2		(1 << 8)
++#define   CLKEN_SPI3		(1 << 9)
++#define   CLKEN_I2S0		(1 << 10)
++#define   CLKEN_I2S1		(1 << 11)
++#define   CLKEN_I2S2		(1 << 12)
++#define   CLKEN_I2C0		(1 << 13)
++#define   CLKEN_I2C1		(1 << 14)
++#define   CLKEN_I2C2		(1 << 15)
++#define   CLKEN_UART1		(1 << 16)
++#define   CLKEN_UART2		(1 << 17)
++#define   CLKEN_UART3		(1 << 18)
++#define   CLKEN_AES		(1 << 19)
++#define   CLKEN_FPIO		(1 << 20)
++#define   CLKEN_TIMER0		(1 << 21)
++#define   CLKEN_TIMER1		(1 << 22)
++#define   CLKEN_TIMER2		(1 << 23)
++#define   CLKEN_WDT0		(1 << 24)
++#define   CLKEN_WDT1		(1 << 25)
++#define   CLKEN_SHA		(1 << 26)
++#define   CLKEN_OTP		(1 << 27)
++#define   CLKEN_RTC		(1 << 29)
++
++struct k210_sysctl {
++	void __iomem		*regs;
++	struct clk_hw		hw;
++};
++
++static void k210_set_bits(u32 val, void __iomem *reg)
++{
++	writel(readl(reg) | val, reg);
++}
++
++static void k210_clear_bits(u32 val, void __iomem *reg)
++{
++	writel(readl(reg) & ~val, reg);
++}
++
++static void k210_pll1_enable(void __iomem *regs)
++{
++	u32 val;
++
++	val = readl(regs + K210_SYSCTL_PLL1);
++	val &= ~0xfffff;
++	val |= (59 << 4) | (3 << 10) | (59 << 15);
++	writel(val, regs + K210_SYSCTL_PLL1);
++
++	k210_clear_bits(PLL_BYPASS, regs + K210_SYSCTL_PLL1);
++	k210_set_bits(PLL_PWR, regs + K210_SYSCTL_PLL1);
++
++	/*
++	 * Reset the pll. The magic NOPs come from the Kendryte reference SDK.
++	 */
++	k210_clear_bits(PLL_RESET, regs + K210_SYSCTL_PLL1);
++	k210_set_bits(PLL_RESET, regs + K210_SYSCTL_PLL1);
++	nop();
++	nop();
++	k210_clear_bits(PLL_RESET, regs + K210_SYSCTL_PLL1);
++
++	for (;;) {
++		val = readl(regs + K210_SYSCTL_PLL_LOCK);
++		if (val & PLL1_LOCK2)
++			break;
++		writel(val | PLL1_SLIP_CLEAR, regs + K210_SYSCTL_PLL_LOCK);
++	}
++
++	k210_set_bits(PLL_OUT_EN, regs + K210_SYSCTL_PLL1);
++}
++
++static unsigned long k210_sysctl_clk_recalc_rate(struct clk_hw *hw,
++		unsigned long parent_rate)
++{
++	struct k210_sysctl *s = container_of(hw, struct k210_sysctl, hw);
++	u32 clksel0, pll0;
++	u64 pll0_freq, clkr0, clkf0, clkod0;
++
++	/*
++	 * If the clock selector is not set, use the base frequency.
++	 * Otherwise, use PLL0 frequency with a frequency divisor.
++	 */
++	clksel0 = readl(s->regs + K210_SYSCTL_CLKSEL0);
++	if (!(clksel0 & CLKSEL_ACLK))
++		return K210_SYSCTL_CLK0_FREQ;
++
++	/*
++	 * Get PLL0 frequency:
++	 * freq = base frequency * clkf0 / (clkr0 * clkod0)
++	 */
++	pll0 = readl(s->regs + K210_SYSCTL_PLL0);
++	clkr0 = 1 + (pll0 & 0x0000000f);
++	clkf0 = 1 + ((pll0 & 0x000003f0) >> 4);
++	clkod0 = 1 + ((pll0 & 0x00003c00) >> 10);
++	pll0_freq = clkf0 * K210_SYSCTL_CLK0_FREQ / (clkr0 * clkod0);
++
++	/* Get the frequency divisor from the clock selector */
++	return pll0_freq / (2ULL << ((clksel0 & 0x00000006) >> 1));
++}
++
++static const struct clk_ops k210_sysctl_clk_ops = {
++	.recalc_rate	= k210_sysctl_clk_recalc_rate,
++};
++
++static const struct clk_init_data k210_clk_init_data = {
++	.name		= "k210-sysctl-pll1",
++	.ops		= &k210_sysctl_clk_ops,
++};
++
++static int k210_sysctl_probe(struct platform_device *pdev)
++{
++	struct k210_sysctl *s;
++	int error;
++
++	pr_info("Kendryte K210 SoC sysctl\n");
++
++	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
++	if (!s)
++		return -ENOMEM;
++
++	s->regs = devm_ioremap_resource(&pdev->dev,
++			platform_get_resource(pdev, IORESOURCE_MEM, 0));
++	if (IS_ERR(s->regs))
++		return PTR_ERR(s->regs);
++
++	s->hw.init = &k210_clk_init_data;
++	error = devm_clk_hw_register(&pdev->dev, &s->hw);
++	if (error) {
++		dev_err(&pdev->dev, "failed to register clk");
++		return error;
++	}
++
++	error = devm_of_clk_add_hw_provider(&pdev->dev, of_clk_hw_simple_get,
++					    &s->hw);
++	if (error) {
++		dev_err(&pdev->dev, "adding clk provider failed\n");
++		return error;
++	}
++
++	return 0;
++}
++
++static const struct of_device_id k210_sysctl_of_match[] = {
++	{ .compatible = "kendryte,k210-sysctl", },
++	{}
++};
++
++static struct platform_driver k210_sysctl_driver = {
++	.driver	= {
++		.name		= "k210-sysctl",
++		.of_match_table	= k210_sysctl_of_match,
++	},
++	.probe			= k210_sysctl_probe,
++};
++
++static int __init k210_sysctl_init(void)
++{
++	return platform_driver_register(&k210_sysctl_driver);
++}
++core_initcall(k210_sysctl_init);
++
++/*
++ * This needs to be called very early during initialization, given that
++ * PLL1 needs to be enabled to be able to use all SRAM.
++ */
++static void __init k210_soc_early_init(const void *fdt)
++{
++	void __iomem *regs;
++
++	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
++	if (!regs)
++		panic("K210 sysctl ioremap");
++
++	/* Enable PLL1 to make the KPU SRAM useable */
++	k210_pll1_enable(regs);
++
++	k210_set_bits(PLL_OUT_EN, regs + K210_SYSCTL_PLL0);
++
++	k210_set_bits(CLKEN_CPU | CLKEN_SRAM0 | CLKEN_SRAM1,
++		      regs + K210_SYSCTL_CLKEN_CENT);
++	k210_set_bits(CLKEN_ROM | CLKEN_TIMER0 | CLKEN_RTC,
++		      regs + K210_SYSCTL_CLKEN_PERI);
++
++	k210_set_bits(CLKSEL_ACLK, regs + K210_SYSCTL_CLKSEL0);
++
++	iounmap(regs);
++}
++SOC_EARLY_INIT_DECLARE("kendryte,k210", k210_soc_early_init);
+diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
+index 4d5d4a65b2a2..8d83210467d9 100644
+--- a/arch/riscv/Kconfig.socs
++++ b/arch/riscv/Kconfig.socs
+@@ -13,6 +13,10 @@ config SOC_SIFIVE
+ config SOC_KENDRYTE
+ 	bool "Kendryte K210 SoC"
+ 	depends on !MMU
++	select BUILTIN_DTB
++	select SERIAL_SIFIVE if TTY
++	select SERIAL_SIFIVE_CONSOLE if TTY
++	select SIFIVE_PLIC
+ 	help
+ 	  This enables support for Kendryte K210 SoC hardware.
+ 
+diff --git a/arch/riscv/boot/dts/Makefile b/arch/riscv/boot/dts/Makefile
+index 0bf2669aa12d..87815557f2db 100644
+--- a/arch/riscv/boot/dts/Makefile
++++ b/arch/riscv/boot/dts/Makefile
+@@ -3,4 +3,5 @@ ifneq ($(CONFIG_BUILTIN_DTB_SOURCE),"")
+ obj-$(CONFIG_USE_BUILTIN_DTB) += $(patsubst "%",%,$(CONFIG_BUILTIN_DTB_SOURCE)).dtb.o
+ else
+ subdir-y += sifive
++subdir-y += kendryte
+ endif
+diff --git a/arch/riscv/boot/dts/kendryte/Makefile b/arch/riscv/boot/dts/kendryte/Makefile
+new file mode 100644
+index 000000000000..815444e69e89
+--- /dev/null
++++ b/arch/riscv/boot/dts/kendryte/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++dtb-$(CONFIG_SOC_KENDRYTE) += k210.dtb
+diff --git a/arch/riscv/boot/dts/kendryte/k210.dts b/arch/riscv/boot/dts/kendryte/k210.dts
+new file mode 100644
+index 000000000000..0d1f28fce6b2
+--- /dev/null
++++ b/arch/riscv/boot/dts/kendryte/k210.dts
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++
++/dts-v1/;
++
++#include "k210.dtsi"
++
++/ {
++	model = "Kendryte K210 generic";
++	compatible = "kendryte,k210";
++
++	chosen {
++		bootargs = "earlycon console=ttySIF0";
++		stdout-path = "serial0";
++	};
++};
++
++&uarths0 {
++	status = "okay";
++};
++
+diff --git a/arch/riscv/boot/dts/kendryte/k210.dtsi b/arch/riscv/boot/dts/kendryte/k210.dtsi
+new file mode 100644
+index 000000000000..4b9eeabb07f7
+--- /dev/null
++++ b/arch/riscv/boot/dts/kendryte/k210.dtsi
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2019 Sean Anderson <seanga2@gmail.com>
++ * Copyright (C) 2020 Western Digital Corporation or its affiliates.
++ */
++
++/ {
++	/*
++	 * Although the K210 is a 64-bit CPU, the address bus is only 32-bits
++	 * wide, and the upper half of all addresses is ignored.
++	 */
++	#address-cells = <1>;
++	#size-cells = <1>;
++	compatible = "kendryte,k210";
++
++	aliases {
++		serial0 = &uarths0;
++	};
++
++	clocks {
++		in0: oscillator {
++			compatible = "fixed-clock";
++			#clock-cells = <0>;
++			clock-frequency = <26000000>;
++		};
++	};
++
++	cpus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++		timebase-frequency = <7800000>;
++		cpu0: cpu@0 {
++			device_type = "cpu";
++			reg = <0>;
++			compatible = "riscv";
++			riscv,isa = "rv64imafdc";
++			mmu-type = "none";
++			i-cache-size = <0x8000>;
++			i-cache-block-size = <64>; /* bogus */
++			d-cache-size = <0x8000>;
++			d-cache-block-size = <64>; /* bogus */
++			clocks = <&sysctl 0>;
++			clock-frequency = <390000000>;
++			cpu0_intc: interrupt-controller {
++				#interrupt-cells = <1>;
++				interrupt-controller;
++				compatible = "riscv,cpu-intc";
++			};
++		};
++		cpu1: cpu@1 {
++			device_type = "cpu";
++			reg = <1>;
++			compatible = "riscv";
++			riscv,isa = "rv64imafdc";
++			mmu-type = "none";
++			i-cache-size = <0x8000>;
++			i-cache-block-size = <64>; /* bogus */
++			d-cache-size = <0x8000>;
++			d-cache-block-size = <64>; /* bogus */
++			clocks = <&sysctl 0>;
++			clock-frequency = <390000000>;
++			cpu1_intc: interrupt-controller {
++				#interrupt-cells = <1>;
++				interrupt-controller;
++				compatible = "riscv,cpu-intc";
++			};
++		};
++	};
++
++	sram0: memory@80000000 {
++		device_type = "memory";
++		reg = <0x80000000 0x400000>;
++	};
++
++	sram1: memory@80400000 {
++		device_type = "memory";
++		reg = <0x80400000 0x200000>;
++	};
++
++	kpu_sram: memory@80600000 {
++		device_type = "memory";
++		reg = <0x80600000 0x200000>;
++	};
++
++	soc {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "kendryte,k210-soc", "simple-bus";
++		ranges;
++		interrupt-parent = <&plic0>;
++
++		sysctl: sysctl@50440000 {
++			compatible = "kendryte,k210-sysctl", "syscon";
++			reg = <0x50440000 0x1000>;
++			#clock-cells = <1>;
++		};
++
++		clint0: interrupt-controller@2000000 {
++			compatible = "riscv,clint0";
++			reg = <0x2000000 0xC000>;
++			interrupts-extended = <&cpu0_intc 3>,  <&cpu1_intc 3>;
++			clocks = <&sysctl 0>;
++		};
++
++		plic0: interrupt-controller@c000000 {
++			#interrupt-cells = <1>;
++			interrupt-controller;
++			compatible = "kendryte,k210-plic0", "riscv,plic0";
++			reg = <0xC000000 0x3FFF008>;
++			interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 0xffffffff>,
++					      <&cpu1_intc 11>, <&cpu1_intc 0xffffffff>;
++			riscv,ndev = <65>;
++			riscv,max-priority = <0x07>;
++		};
++
++		uarths0: serial@38000000 {
++			compatible = "kendryte,k210-uart0", "sifive,uart0";
++			reg = <0x38000000 0x20>;
++			interrupts = <33>;
++			clocks = <&sysctl 0>;
++		};
++	};
++};
+diff --git a/arch/riscv/configs/nommu_k210_defconfig b/arch/riscv/configs/nommu_k210_defconfig
+new file mode 100644
+index 000000000000..00ded8f0bc55
+--- /dev/null
++++ b/arch/riscv/configs/nommu_k210_defconfig
+@@ -0,0 +1,68 @@
++# CONFIG_CPU_ISOLATION is not set
++CONFIG_LOG_BUF_SHIFT=15
++CONFIG_PRINTK_SAFE_LOG_BUF_SHIFT=12
++CONFIG_BLK_DEV_INITRD=y
++CONFIG_INITRAMFS_SOURCE="k210.cpio"
++CONFIG_INITRAMFS_FORCE=y
++# CONFIG_RD_BZIP2 is not set
++# CONFIG_RD_LZMA is not set
++# CONFIG_RD_XZ is not set
++# CONFIG_RD_LZO is not set
++# CONFIG_RD_LZ4 is not set
++# CONFIG_BOOT_CONFIG is not set
++CONFIG_CC_OPTIMIZE_FOR_SIZE=y
++# CONFIG_SYSFS_SYSCALL is not set
++# CONFIG_FHANDLE is not set
++# CONFIG_BASE_FULL is not set
++# CONFIG_EPOLL is not set
++# CONFIG_SIGNALFD is not set
++# CONFIG_TIMERFD is not set
++# CONFIG_EVENTFD is not set
++# CONFIG_AIO is not set
++# CONFIG_IO_URING is not set
++# CONFIG_ADVISE_SYSCALLS is not set
++# CONFIG_MEMBARRIER is not set
++# CONFIG_KALLSYMS is not set
++CONFIG_EMBEDDED=y
++# CONFIG_VM_EVENT_COUNTERS is not set
++# CONFIG_COMPAT_BRK is not set
++CONFIG_SLOB=y
++# CONFIG_SLAB_MERGE_DEFAULT is not set
++# CONFIG_MMU is not set
++CONFIG_SOC_KENDRYTE=y
++CONFIG_MAXPHYSMEM_2GB=y
++CONFIG_SMP=y
++CONFIG_NR_CPUS=2
++CONFIG_CMDLINE="earlycon console=ttySIF0"
++CONFIG_CMDLINE_FORCE=y
++CONFIG_USE_BUILTIN_DTB=y
++CONFIG_BUILTIN_DTB_SOURCE="kendryte/k210"
++# CONFIG_BLOCK is not set
++CONFIG_BINFMT_FLAT=y
++# CONFIG_COREDUMP is not set
++CONFIG_DEVTMPFS=y
++CONFIG_DEVTMPFS_MOUNT=y
++# CONFIG_FW_LOADER is not set
++# CONFIG_ALLOW_DEV_COREDUMP is not set
++# CONFIG_INPUT_KEYBOARD is not set
++# CONFIG_INPUT_MOUSE is not set
++# CONFIG_SERIO is not set
++# CONFIG_LEGACY_PTYS is not set
++# CONFIG_LDISC_AUTOLOAD is not set
++# CONFIG_DEVMEM is not set
++# CONFIG_HW_RANDOM is not set
++# CONFIG_HWMON is not set
++# CONFIG_VGA_CONSOLE is not set
++# CONFIG_HID is not set
++# CONFIG_USB_SUPPORT is not set
++# CONFIG_VIRTIO_MENU is not set
++# CONFIG_DNOTIFY is not set
++# CONFIG_INOTIFY_USER is not set
++# CONFIG_MISC_FILESYSTEMS is not set
++CONFIG_LSM="[]"
++CONFIG_PRINTK_TIME=y
++# CONFIG_DEBUG_MISC is not set
++# CONFIG_SCHED_DEBUG is not set
++# CONFIG_RCU_TRACE is not set
++# CONFIG_FTRACE is not set
++# CONFIG_RUNTIME_TESTING_MENU is not set
+diff --git a/arch/riscv/Makefile b/arch/riscv/Makefile
+index b9009a2fbaf5..440969763e14 100644
+--- a/arch/riscv/Makefile
++++ b/arch/riscv/Makefile
+@@ -84,11 +84,11 @@ vdso_install:
+ 	$(Q)$(MAKE) $(build)=arch/riscv/kernel/vdso $@
+ 
+ ifeq ($(CONFIG_RISCV_M_MODE),y)
+-KBUILD_IMAGE := $(boot)/loader
++KBUILD_IMAGE := $(boot)/loader.bin
+ else
+ KBUILD_IMAGE := $(boot)/Image.gz
+ endif
+-BOOT_TARGETS := Image Image.gz loader
++BOOT_TARGETS := Image Image.gz loader loader.bin
+ 
+ all:	$(notdir $(KBUILD_IMAGE))
+ 
+diff --git a/arch/riscv/boot/Makefile b/arch/riscv/boot/Makefile
+index 36db8145f9f4..3530c59b3ea7 100644
+--- a/arch/riscv/boot/Makefile
++++ b/arch/riscv/boot/Makefile
+@@ -41,6 +41,9 @@ $(obj)/Image.lzma: $(obj)/Image FORCE
+ $(obj)/Image.lzo: $(obj)/Image FORCE
+ 	$(call if_changed,lzo)
+ 
++$(obj)/loader.bin: $(obj)/loader FORCE
++	$(call if_changed,objcopy)
++
+ install:
+ 	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh $(KERNELRELEASE) \
+ 	$(obj)/Image System.map "$(INSTALL_PATH)"

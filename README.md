@@ -1,73 +1,98 @@
-Buildroot for RISC-V 64 NOMMU
-=============================
+Buildroot for RISC-V 64 NOMMU on Kendryte K210
+==============================================
 
-Buildroot is a simple, efficient and easy-to-use tool to generate embedded
-Linux systems through cross-compilation.
-
-The documentation can be found in docs/manual. You can generate a text
-document with 'make manual-text' and read output/docs/manual/manual.text.
-Online documentation can be found at http://buildroot.org/docs.html
-
-To build and use the buildroot stuff, do the following:
-
-1) run 'make menuconfig'
-2) select the target architecture and the packages you wish to compile
-3) run 'make'
-4) wait while it compiles
-5) find the kernel, bootloader, root filesystem, etc. in output/images
-
-You do not need to be root to build or run buildroot.  Have fun!
-
-Buildroot comes with a basic configuration for a number of boards. Run
-'make list-defconfigs' to view the list of provided configurations.
-
-Please feed suggestions, bug reports, insults, and bribes back to the
-buildroot mailing list: buildroot@buildroot.org
-You can also find us on #buildroot on Freenode IRC.
-
-If you would like to contribute patches, please read
-https://buildroot.org/manual.html#submitting-patches
-
-For riscv64 nommu uClibc toolchain build
-========================================
+To build the toolchain and board image, run:
 
 ```
-$ make riscv64_nommu_defconfig
+$ make riscv64_k210_defconfig
 $ make
 ```
 
-The compiled toolchain is in `output/host`. Copy this somewhere:
+Buildroot will compile the complete tree including the Linux Kernel and the
+busybox initramfs.
+
+The image (`loader.bin`) will be on `output/images`. Load it into your K210 board with:
+
+`./riscv64-uclibc-nommu/kflash.py -B goE -b 2000000 -t output/images/loader.bin`
+
+It has been tested on Sipeed MaixGo board. Might require some changes for other boards.
+
+More info on KFlash in <https://github.com/kendryte/kflash.py>.
+
+For conveniance, a precompiled toolchain, the initramfs cpio
+image and a Kernel (loader) file are present in the `riscv64-uclibc-nommu` directory.
+
+## Convenience commands
+
+### Make changes to Linux Kernel, Busybox and Buildroot
+
+```bash
+# Change Linux Kernel
+make linux-menuconfig
+
+# Change buildroot parameters
+make menuconfig
+
+# Change Busybox features
+make busybox-menuconfig
+
+# To save your changes to the repo files, use:
+make busybox-update-config
+make linux-update-defconfig
+make savedefconfig
+mv -f defconfig configs/riscv64_k210_defconfig
+```
+
+After this, run `make` or rebuild all from scratch (below).
+
+### Rebuild all from scratch (except toolchain)
+
+```bash
+rm -rf output/images output/target
+mkdir -p output/images
+touch output/images/rootfs.cpio
+T=(`make show-targets`)
+for X in $T; do
+    if [[ $X != host* ]] && [[ $X != toolchain* ]] && [[ $X != uclibc* ]]; then
+        make $X-rebuild
+    fi
+done
+make
+```
+
+## WiFi Network thru ESP8285 (WIP)
+
+This is still a work in progress and usually the kernel complains of no memory.
+The repo already includes all Kernel patches for this.
+
+To test this, enable the following features on Linux Kernel:
 
 ```
-$ sudo cp -r output/host /opt/riscv64-uclibc
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_TUN=y
 ```
 
-To compile a minimal busybox suitable for low-memory nommu system, use this
-toolchain together with the minimal configuration file provided.
+More details on <https://github.com/laanwj/k210-sdk-stuff/tree/master/linux>.
 
+```bash
+# On K210
+# The IP address is the host used as tunnel
+
+/root/esptun tun0 /dev/ttyS1 "SSID" "Password" 192.168.15.15 23232
+# Note the IP printed above to be used on your host
+/sbin/ip link set dev tun0 mtu 1472
+/sbin/ip addr add 10.0.1.2/24 dev tun0
+/sbin/ip link set tun0 up
+/sbin/ip route add default via 10.0.1.1 dev tun0
+
+# On host
+#
+# The first socat IP is the K210 IP got from DHCP
+# The second IP is your host IP
+sudo iptables -t nat -F
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+sudo socat UDP:192.168.15.124:23232,bind=192.168.15.15:23232 TUN:10.0.1.1/24,tun-name=tundudp,iff-no-pi,tun-type=tun,su=$USER,iff-up &
+sudo ip link set dev tundudp mtu 1472
 ```
-$ cd riscv64-uclibc-nommu/
-$ git clone git://git.busybox.net/busybox.git
-$ cd busybox
-$ make buildroot/riscv64-uclibc-nommu/busybox-small.config
-$ make SKIP_STRIP=y
-$ make SKIP_STRIP=y install
-```
-
-The base files usable for an initramfs image can be found in the directory
-`_install/`.
-
-For conveniance, a precompiled toolchain, a set of initramfs files and its cpio
-image file are present in the riscv64-uclibc-nommu directory.
-
-For Kendryte K210 boards
-========================
-
-The built (or precompiled) initramfs cpio image file can be used as the default
-k210.cpio initramfs builtin the kernel (as referenced by nommu_k210_defconfig).
-
-For conveniance, the K210 kernel support patches can be found in
-riscv64-uclibc-nommu/kernel-patches directory. A precompiled bootable kernel
-image including these patches and the simple initramfs.cpio userspace can be
-found in the kernel-image directory.
-
