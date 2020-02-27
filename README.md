@@ -15,9 +15,11 @@ The image (`loader.bin`) will be on `output/images`. Load it into your K210 boar
 
 `./riscv64-uclibc-nommu/kflash.py -B goE -b 2000000 -t output/images/loader.bin`
 
-It has been tested on Sipeed MaixGo board. Might require some changes for other boards.
+More info on KFlash in <https://github.com/kendryte/kflash.py>. Might require some changes for other boards.
 
-More info on KFlash in <https://github.com/kendryte/kflash.py>.
+Tested boards:
+- Sipeed MaixGo
+- Sipeed MaixDuino
 
 For conveniance, a precompiled toolchain, the initramfs cpio
 image and a Kernel (loader) file are present in the `riscv64-uclibc-nommu` directory.
