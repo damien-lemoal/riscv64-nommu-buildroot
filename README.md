@@ -18,7 +18,7 @@ The image (`loader.bin`) will be on `output/images`. Load it into your K210 boar
 More info on KFlash in <https://github.com/kendryte/kflash.py>. Might require some changes for other boards.
 
 Tested boards:
-- Sipeed MaixGo
+- Sipeed Maix Go Suit
 - Sipeed MaixDuino
 
 For conveniance, a precompiled toolchain, the initramfs cpio
@@ -42,7 +42,6 @@ make busybox-menuconfig
 make busybox-update-config
 make linux-update-defconfig
 make savedefconfig
-mv -f defconfig configs/riscv64_k210_defconfig
 ```
 
 After this, run `make` or rebuild all from scratch (below).

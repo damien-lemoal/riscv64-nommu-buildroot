@@ -1,0 +1,9 @@
+diff --git a/arch/riscv/boot/.gitignore b/arch/riscv/boot/.gitignore
+index 8dab0bb6ae66..8a45a37d2af4 100644
+--- a/arch/riscv/boot/.gitignore
++++ b/arch/riscv/boot/.gitignore
+@@ -1,2 +1,4 @@
+ Image
+ Image.gz
++loader
++loader.lds

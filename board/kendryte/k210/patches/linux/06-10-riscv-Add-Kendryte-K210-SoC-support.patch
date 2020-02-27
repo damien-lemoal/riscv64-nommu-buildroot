@@ -1,42 +1,11 @@
-From 3599ac1a831c4fa192b4d4e82d0014027877511a Mon Sep 17 00:00:00 2001
-From: Christoph Hellwig <hch@lst.de>
-Date: Fri, 17 Jan 2020 13:09:23 +0900
-Subject: [PATCH 06/10] riscv: Add Kendryte K210 SoC support
-
-Add support for the Kendryte K210 RISC-V SoC. For now, this support
-only provides a simple sysctl driver allowing to setup the CPU and
-uart clock. This support is enabled through the new Kconfig option
-SOC_KENDRYTE and defines the config option CONFIG_K210_SYSCTL
-to enable the K210 SoC sysctl driver compilation.
-
-The sysctl driver also registers an early SoC initialization function
-allowing enabling the general purpose use of the 2MB of SRAM normally
-reserved for the SoC AI engine. This initialization function is
-automatically called before the dt early initialization using the flat
-dt root node compatible property matching the value "kendryte,k210".
-
-Signed-off-by: Christoph Hellwig <hch@lst.de>
-Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
----
- arch/riscv/Kconfig.socs            |   6 +
- drivers/soc/Kconfig                |   1 +
- drivers/soc/Makefile               |   1 +
- drivers/soc/kendryte/Kconfig       |  14 ++
- drivers/soc/kendryte/Makefile      |   3 +
- drivers/soc/kendryte/k210-sysctl.c | 245 +++++++++++++++++++++++++++++
- 6 files changed, 270 insertions(+)
- create mode 100644 drivers/soc/kendryte/Kconfig
- create mode 100644 drivers/soc/kendryte/Makefile
- create mode 100644 drivers/soc/kendryte/k210-sysctl.c
-
 diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
 index d325b67d00df..4d5d4a65b2a2 100644
 --- a/arch/riscv/Kconfig.socs
 +++ b/arch/riscv/Kconfig.socs
 @@ -10,4 +10,10 @@ config SOC_SIFIVE
- 	help
- 	  This enables support for SiFive SoC platform hardware.
- 
+	help
+	  This enables support for SiFive SoC platform hardware.
+
 +config SOC_KENDRYTE
 +	bool "Kendryte K210 SoC"
 +	depends on !MMU
@@ -53,7 +22,7 @@ index 1778f8c62861..425ab6f7e375 100644
  source "drivers/soc/xilinx/Kconfig"
  source "drivers/soc/zte/Kconfig"
 +source "drivers/soc/kendryte/Kconfig"
- 
+
  endmenu
 diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
 index 8b49d782a1ab..af58063bb989 100644
@@ -344,6 +313,3 @@ index 000000000000..7d4ecd954af0
 +	iounmap(regs);
 +}
 +SOC_EARLY_INIT_DECLARE("kendryte,k210", k210_soc_early_init);
--- 
-2.24.1
-

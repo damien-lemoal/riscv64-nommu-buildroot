@@ -3,17 +3,17 @@ index 0d1f28fce6b2b..3627f00175103 100644
 --- a/arch/riscv/boot/dts/kendryte/k210.dts
 +++ b/arch/riscv/boot/dts/kendryte/k210.dts
 @@ -17,7 +17,14 @@
- 	};
+	};
  };
- 
+
 +// &apb0 {
 +// 	status = "okay";
 +// };
 +
  &uarths0 {
- 	status = "okay";
+	status = "okay";
  };
- 
+
 +&uart1 {
 +	status = "okay";
 +};
@@ -22,17 +22,17 @@ index 4b9eeabb07f79..4e9d4400f9959 100644
 --- a/arch/riscv/boot/dts/kendryte/k210.dtsi
 +++ b/arch/riscv/boot/dts/kendryte/k210.dtsi
 @@ -15,6 +15,7 @@
- 
- 	aliases {
- 		serial0 = &uarths0;
+
+	aliases {
+		serial0 = &uarths0;
 +		serial1 = &uart1;
- 	};
- 
- 	clocks {
+	};
+
+	clocks {
 @@ -119,5 +120,31 @@
- 			interrupts = <33>;
- 			clocks = <&sysctl 0>;
- 		};
+			interrupts = <33>;
+			clocks = <&sysctl 0>;
+		};
 +
 +		/*
 +		apb0: bus@50200000 {
@@ -59,7 +59,7 @@ index 4b9eeabb07f79..4e9d4400f9959 100644
 +				ri-override;
 +			};
 +		// };
- 	};
+	};
  };
 diff --git a/drivers/soc/kendryte/k210-sysctl.c b/drivers/soc/kendryte/k210-sysctl.c
 index 7d4ecd954af0b..83e0ee7f526fb 100644
@@ -71,7 +71,7 @@ index 7d4ecd954af0b..83e0ee7f526fb 100644
  #include <linux/clkdev.h>
 +#include <linux/delay.h>
  #include <asm/soc.h>
- 
+
  #define K210_SYSCTL_CLK0_FREQ		26000000UL
 @@ -79,6 +80,57 @@
  #define   CLKEN_SHA		(1 << 26)
@@ -128,13 +128,13 @@ index 7d4ecd954af0b..83e0ee7f526fb 100644
 +#define UART_RECEIVE_FIFO_4	1
 +#define UART_RECEIVE_FIFO_8	2
 +#define UART_RECEIVE_FIFO_14	3
- 
+
  struct k210_sysctl {
- 	void __iomem		*regs;
+	void __iomem		*regs;
 @@ -216,6 +268,77 @@ static int __init k210_sysctl_init(void)
  }
  core_initcall(k210_sysctl_init);
- 
+
 +static unsigned long k210_sysctl_get_apb0_clk(void __iomem *regs)
 +{
 +	u32 clksel0, pll0;
@@ -212,16 +212,16 @@ index 7d4ecd954af0b..83e0ee7f526fb 100644
 @@ -223,23 +346,101 @@ core_initcall(k210_sysctl_init);
  static void __init k210_soc_early_init(const void *fdt)
  {
- 	void __iomem *regs;
+	void __iomem *regs;
 +	void __iomem *fpioa;
 +	void __iomem *gpiohs;
 +	void __iomem *uart1;
 +	int x=0, y=0;
- 
- 	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
- 	if (!regs)
- 		panic("K210 sysctl ioremap");
- 
+
+	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
+	if (!regs)
+		panic("K210 sysctl ioremap");
+
 +	fpioa = ioremap(K210_FPIOA_FPIOA_BASE_ADDR, 0x1000);
 +	if (!regs)
 +		panic("K210 fpioa ioremap");
@@ -234,21 +234,21 @@ index 7d4ecd954af0b..83e0ee7f526fb 100644
 +	if (!regs)
 +		panic("K210 gpiohs ioremap");
 +
- 	/* Enable PLL1 to make the KPU SRAM useable */
- 	k210_pll1_enable(regs);
- 
- 	k210_set_bits(PLL_OUT_EN, regs + K210_SYSCTL_PLL0);
- 
+	/* Enable PLL1 to make the KPU SRAM useable */
+	k210_pll1_enable(regs);
+
+	k210_set_bits(PLL_OUT_EN, regs + K210_SYSCTL_PLL0);
+
 -	k210_set_bits(CLKEN_CPU | CLKEN_SRAM0 | CLKEN_SRAM1,
 +	k210_set_bits(CLKEN_CPU | CLKEN_SRAM0 | CLKEN_SRAM1
 +			| CLKEN_APB0 | CLKEN_APB1,
- 		      regs + K210_SYSCTL_CLKEN_CENT);
+		      regs + K210_SYSCTL_CLKEN_CENT);
 -	k210_set_bits(CLKEN_ROM | CLKEN_TIMER0 | CLKEN_RTC,
 +	k210_set_bits(CLKEN_ROM | CLKEN_TIMER0 | CLKEN_RTC | CLKEN_UART1 | CLKEN_FPIO,
- 		      regs + K210_SYSCTL_CLKEN_PERI);
- 
- 	k210_set_bits(CLKSEL_ACLK, regs + K210_SYSCTL_CLKSEL0);
- 
+		      regs + K210_SYSCTL_CLKEN_PERI);
+
+	k210_set_bits(CLKSEL_ACLK, regs + K210_SYSCTL_CLKSEL0);
+
 +	/* Set FPIOA functions for WIFI pins. */
 +	writel(FPIOA_DEFAULT_GPIOHS8 | FPIOA_PD, fpioa + PIN_WIFI_EN * 4);
 +	writel(FPIOA_DEFAULT_UART1_RX, fpioa + PIN_WIFI_TX * 4);
@@ -307,7 +307,7 @@ index 7d4ecd954af0b..83e0ee7f526fb 100644
 +	}
 +#endif
 +
- 	iounmap(regs);
+	iounmap(regs);
 +	iounmap(fpioa);
 +	iounmap(gpiohs);
 +	iounmap(uart1);
@@ -318,23 +318,23 @@ index d5f81b98e4d75..6894552aefdc3 100644
 --- a/drivers/tty/serial/sifive.c
 +++ b/drivers/tty/serial/sifive.c
 @@ -467,6 +467,7 @@ static void __ssp_update_div(struct sifive_serial_port *ssp)
- 	div = DIV_ROUND_UP(ssp->clkin_rate, ssp->baud_rate) - 1;
- 
- 	__ssp_writel(div, SIFIVE_SERIAL_DIV_OFFS, ssp);
+	div = DIV_ROUND_UP(ssp->clkin_rate, ssp->baud_rate) - 1;
+
+	__ssp_writel(div, SIFIVE_SERIAL_DIV_OFFS, ssp);
 +	printk("SSP rate: %04x\n", div);
  }
- 
+
  /**
 @@ -742,6 +743,9 @@ static int __init early_sifive_serial_setup(struct earlycon_device *dev,
- 
- 	dev->con->write = early_sifive_serial_write;
- 
+
+	dev->con->write = early_sifive_serial_write;
+
 +	/* HACK: initial baud for debugging */
 +	__ssp_early_writel(0x0d39, SIFIVE_SERIAL_DIV_OFFS, port);
 +
- 	return 0;
+	return 0;
  }
- 
+
 
 diff --git a/arch/riscv/configs/nommu_k210_defconfig b/arch/riscv/configs/nommu_k210_defconfig
 index 00ded8f0bc551..65a6885ec2d0e 100644
@@ -361,7 +361,7 @@ index 83e0ee7f526fb..acc61e88100ec 100644
 @@ -109,29 +109,6 @@
  #define K210_GPIOHS_OUTPUT_EN	0x08
  #define K210_GPIOHS_OUTPUT_VAL	0x0C
- 
+
 -#define K210_UART_UART1_BASE_ADDR	0x50210000ULL
 -
 -#define K210_UART_RBR		0x00
@@ -386,12 +386,12 @@ index 83e0ee7f526fb..acc61e88100ec 100644
 -#define UART_RECEIVE_FIFO_14	3
 -
  struct k210_sysctl {
- 	void __iomem		*regs;
- 	struct clk_hw		hw;
+	void __iomem		*regs;
+	struct clk_hw		hw;
 @@ -268,77 +245,6 @@ static int __init k210_sysctl_init(void)
  }
  core_initcall(k210_sysctl_init);
- 
+
 -static unsigned long k210_sysctl_get_apb0_clk(void __iomem *regs)
 -{
 -	u32 clksel0, pll0;
@@ -467,28 +467,28 @@ index 83e0ee7f526fb..acc61e88100ec 100644
   * This needs to be called very early during initialization, given that
   * PLL1 needs to be enabled to be able to use all SRAM.
 @@ -348,7 +254,6 @@ static void __init k210_soc_early_init(const void *fdt)
- 	void __iomem *regs;
- 	void __iomem *fpioa;
- 	void __iomem *gpiohs;
+	void __iomem *regs;
+	void __iomem *fpioa;
+	void __iomem *gpiohs;
 -	void __iomem *uart1;
- 	int x=0, y=0;
- 
- 	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
+	int x=0, y=0;
+
+	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
 @@ -363,10 +268,6 @@ static void __init k210_soc_early_init(const void *fdt)
- 	if (!regs)
- 		panic("K210 gpiohs ioremap");
- 
+	if (!regs)
+		panic("K210 gpiohs ioremap");
+
 -	uart1 = ioremap(K210_UART_UART1_BASE_ADDR, 0x1000);
 -	if (!regs)
 -		panic("K210 gpiohs ioremap");
 -
- 	/* Enable PLL1 to make the KPU SRAM useable */
- 	k210_pll1_enable(regs);
- 
+	/* Enable PLL1 to make the KPU SRAM useable */
+	k210_pll1_enable(regs);
+
 @@ -416,31 +317,8 @@ static void __init k210_soc_early_init(const void *fdt)
- 	}
- 	k210_clear_bits(RESET_UART1, regs + K210_SYSCTL_PERI_RESET);
- 
+	}
+	k210_clear_bits(RESET_UART1, regs + K210_SYSCTL_PERI_RESET);
+
 -#if 0
 -	/** Do echo test on UART1. */
 -	{
@@ -511,9 +511,9 @@ index 83e0ee7f526fb..acc61e88100ec 100644
 -	}
 -#endif
 -
- 	iounmap(regs);
- 	iounmap(fpioa);
- 	iounmap(gpiohs);
+	iounmap(regs);
+	iounmap(fpioa);
+	iounmap(gpiohs);
 -	iounmap(uart1);
  }
  SOC_EARLY_INIT_DECLARE("kendryte,k210", k210_soc_early_init);
@@ -524,25 +524,25 @@ index acc61e88100ec..a5add4c53eb99 100644
 +++ b/drivers/soc/kendryte/k210-sysctl.c
 @@ -86,7 +86,6 @@
  #define K210_FPIOA_FPIOA_BASE_ADDR	0x502B0000ULL
- 
+
  #define FPIOA_DEFAULT_GPIOHS8   0x00901f20 /* GPIO High speed 8 */
 -#define FPIOA_DEFAULT_GPIOHS9   0x00901f21 /* GPIO High speed 9 */
  #define FPIOA_DEFAULT_UART1_RX  0x00900040 /* UART1 Receiver */
  #define FPIOA_DEFAULT_UART1_TX  0x00001f41 /* UART1 Transmitter */
- 
+
 @@ -254,7 +253,7 @@ static void __init k210_soc_early_init(const void *fdt)
- 	void __iomem *regs;
- 	void __iomem *fpioa;
- 	void __iomem *gpiohs;
+	void __iomem *regs;
+	void __iomem *fpioa;
+	void __iomem *gpiohs;
 -	int x=0, y=0;
 +	int y=0;
- 
- 	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
- 	if (!regs)
+
+	regs = ioremap(K210_SYSCTL_SYSCTL_BASE_ADDR, 0x1000);
+	if (!regs)
 @@ -295,21 +294,6 @@ static void __init k210_soc_early_init(const void *fdt)
- 	}
- 	k210_set_bits(BIT(8), gpiohs + K210_GPIOHS_OUTPUT_VAL);
- 
+	}
+	k210_set_bits(BIT(8), gpiohs + K210_GPIOHS_OUTPUT_VAL);
+
 -	/** Blink blue led (FPIOA+GPIOHS test). */
 -	writel(FPIOA_DEFAULT_GPIOHS9 | FPIOA_PD, fpioa + PIN_LED_BLUE * 4);
 -	k210_clear_bits(BIT(9), gpiohs + K210_GPIOHS_INPUT_EN);
@@ -558,9 +558,9 @@ index acc61e88100ec..a5add4c53eb99 100644
 -		}
 -	}
 -
- 	/** Reset UART1 */
- 	k210_set_bits(RESET_UART1, regs + K210_SYSCTL_PERI_RESET);
- 	for (y=0; y<20000000; ++y) {
+	/** Reset UART1 */
+	k210_set_bits(RESET_UART1, regs + K210_SYSCTL_PERI_RESET);
+	for (y=0; y<20000000; ++y) {
 
 diff --git a/drivers/soc/kendryte/k210-sysctl.c b/drivers/soc/kendryte/k210-sysctl.c
 index a5add4c53eb99..4d576ee4bc732 100644
@@ -569,10 +569,10 @@ index a5add4c53eb99..4d576ee4bc732 100644
 @@ -83,8 +83,10 @@
  #define K210_SYSCTL_PERI_RESET		0x34
  #define   RESET_UART1		(1 << 16)
- 
+
 +/* Registers base address */
  #define K210_FPIOA_FPIOA_BASE_ADDR	0x502B0000ULL
- 
+
 +/* FPIOA progammable I/O configuration values */
  #define FPIOA_DEFAULT_GPIOHS8   0x00901f20 /* GPIO High speed 8 */
  #define FPIOA_DEFAULT_UART1_RX  0x00900040 /* UART1 Receiver */
@@ -580,7 +580,7 @@ index a5add4c53eb99..4d576ee4bc732 100644
 @@ -92,22 +94,20 @@
  #define FPIOA_PU 0x00010000 /* Pull up */
  #define FPIOA_PD 0x00020000 /* Pull down */
- 
+
 -#define PIN_ISP_RX 4
 -#define PIN_ISP_TX 5
 -#define PIN_LED_BLUE 12
@@ -592,19 +592,18 @@ index a5add4c53eb99..4d576ee4bc732 100644
 -
 +/* Registers base address */
  #define K210_GPIOHS_GPIOHS_BASE_ADDR	0x38001000ULL
- 
+
 +/* Registers */
  #define K210_GPIOHS_INPUT_VAL	0x00
  #define K210_GPIOHS_INPUT_EN	0x04
  #define K210_GPIOHS_OUTPUT_EN	0x08
  #define K210_GPIOHS_OUTPUT_VAL	0x0C
- 
+
 +/* Pin numbers (Maix Go board) */
 +#define PIN_WIFI_TX 6
 +#define PIN_WIFI_RX 7
 +#define PIN_WIFI_EN 8
 +
  struct k210_sysctl {
- 	void __iomem		*regs;
- 	struct clk_hw		hw;
-
+	void __iomem		*regs;
+	struct clk_hw		hw;

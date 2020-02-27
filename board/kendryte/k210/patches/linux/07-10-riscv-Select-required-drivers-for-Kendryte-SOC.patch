@@ -1,0 +1,14 @@
+diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
+index 4d5d4a65b2a2..8d83210467d9 100644
+--- a/arch/riscv/Kconfig.socs
++++ b/arch/riscv/Kconfig.socs
+@@ -13,6 +13,10 @@ config SOC_SIFIVE
+ config SOC_KENDRYTE
+	bool "Kendryte K210 SoC"
+	depends on !MMU
++	select BUILTIN_DTB
++	select SERIAL_SIFIVE if TTY
++	select SERIAL_SIFIVE_CONSOLE if TTY
++	select SIFIVE_PLIC
+	help
+	  This enables support for Kendryte K210 SoC hardware.

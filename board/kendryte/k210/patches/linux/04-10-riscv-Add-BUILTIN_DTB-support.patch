@@ -1,27 +1,10 @@
-From 8c8c4fc13feadddf9a12cbc234b9681092b9ab5f Mon Sep 17 00:00:00 2001
-From: Damien Le Moal <damien.lemoal@wdc.com>
-Date: Fri, 17 Jan 2020 13:30:48 +0900
-Subject: [PATCH 04/10] riscv: Add BUILTIN_DTB support
-
-Enable a kernel builtin dtb for boards not capable of providing a
-device tree to the kernel.
-
-Signed-off-by: Damien Le Moal <damien.lemoal@wdc.com>
----
- arch/riscv/Kbuild            |  1 +
- arch/riscv/Kconfig           | 18 ++++++++++++++++++
- arch/riscv/boot/dts/Makefile |  4 ++++
- arch/riscv/kernel/setup.c    |  6 ++++++
- arch/riscv/mm/init.c         |  4 ++++
- 5 files changed, 33 insertions(+)
-
 diff --git a/arch/riscv/Kbuild b/arch/riscv/Kbuild
 index d1d0aa70fdf1..988804e430e4 100644
 --- a/arch/riscv/Kbuild
 +++ b/arch/riscv/Kbuild
 @@ -1,3 +1,4 @@
  # SPDX-License-Identifier: GPL-2.0-only
- 
+
  obj-y += kernel/ mm/ net/
 +obj-$(CONFIG_USE_BUILTIN_DTB)	+= boot/dts/
 diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
@@ -29,9 +12,9 @@ index 1a3b5a5276be..28899e15f548 100644
 --- a/arch/riscv/Kconfig
 +++ b/arch/riscv/Kconfig
 @@ -355,6 +355,24 @@ config CMDLINE_FORCE
- 
+
  endchoice
- 
+
 +config USE_BUILTIN_DTB
 +	bool "Use builtin DTB"
 +	help
@@ -51,7 +34,7 @@ index 1a3b5a5276be..28899e15f548 100644
 +	  the kernel.
 +
  endmenu
- 
+
  menu "Power management options"
 diff --git a/arch/riscv/boot/dts/Makefile b/arch/riscv/boot/dts/Makefile
 index dcc3ada78455..0bf2669aa12d 100644
@@ -69,18 +52,18 @@ index 0a6d415b0a5a..3e89be9d888c 100644
 --- a/arch/riscv/kernel/setup.c
 +++ b/arch/riscv/kernel/setup.c
 @@ -68,7 +68,13 @@ void __init setup_arch(char **cmdline_p)
- 
- 	setup_bootmem();
- 	paging_init();
+
+	setup_bootmem();
+	paging_init();
 +
 +#if IS_ENABLED(CONFIG_USE_BUILTIN_DTB)
 +	unflatten_and_copy_device_tree();
 +#else
- 	unflatten_device_tree();
+	unflatten_device_tree();
 +#endif
 +
- 	clint_init_boot_cpu();
- 
+	clint_init_boot_cpu();
+
  #ifdef CONFIG_SWIOTLB
 diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
 index 965a8cf4829c..1274e889d008 100644
@@ -93,11 +76,8 @@ index 965a8cf4829c..1274e889d008 100644
 +#if IS_ENABLED(CONFIG_USE_BUILTIN_DTB)
 +	dtb_early_va = __dtb_start;
 +#else
- 	dtb_early_va = (void *)dtb_pa;
+	dtb_early_va = (void *)dtb_pa;
 +#endif
  }
- 
- static inline void setup_vm_final(void)
--- 
-2.24.1
 
+ static inline void setup_vm_final(void)
