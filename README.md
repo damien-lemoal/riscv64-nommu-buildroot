@@ -1,6 +1,26 @@
 Buildroot for RISC-V 64 NOMMU
 =============================
 
+**Important note: This repository is no longer maintained**
+
+Please use my buildroot repository instead:
+
+https://github.com/damien-lemoal/buildroot
+
+To build a Kendryte K210 boot image with kernel 5.8, do:
+
+```
+> git clone git@github.com:damien-lemoal/buildroot.git
+> cd buildroot
+> make kendryte_k210_config
+> make
+```
+
+The bootable image will be *output/images/loader.bin*. Flash it to the board
+using kflash.py.
+
+**End of important note**
+
 Buildroot is a simple, efficient and easy-to-use tool to generate embedded
 Linux systems through cross-compilation.
 
