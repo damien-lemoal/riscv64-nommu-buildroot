@@ -8,9 +8,9 @@ https://github.com/damien-lemoal/buildroot
 To build a Kendryte K210 boot image with kernel 5.8, do:
 
 ```
-> git clone git@github.com:damien-lemoal/buildroot.git
+> git clone https://github.com/damien-lemoal/buildroot
 > cd buildroot
-> make kendryte_k210_config
+> make kendryte_k210_defconfig
 > make
 ```
 
